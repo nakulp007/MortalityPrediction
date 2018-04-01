@@ -85,7 +85,7 @@ object Main {
 
     /****************** Baseline Feature Constructions **********************/
     /* Simple baseline feature construction with base features */
-    val baseFeatures = FeatureConstruction.constructBaselineFeatureTuples(
+    val baseFeatures = FeatureConstruction.constructBaselineFeatureArrayTuples(
       sc, patients, icuStays, rawSaps2s)
     println("------------ Base Features -----------")
     //baseFeatures.foreach(println)
@@ -93,7 +93,7 @@ object Main {
     println("------------ Base Features End -----------")
 
     /* Example of adjusting with hours since start time */
-    val baseFeatures12 = FeatureConstruction.constructBaselineFeatureTuples(
+    val baseFeatures12 = FeatureConstruction.constructBaselineFeatureArrayTuples(
       sc, patients, icuStays, rawSaps2s, firstNoteDates, 12)
     println("------------ Base Features hr = 12 -----------")
     //baseFeatures.foreach(println)

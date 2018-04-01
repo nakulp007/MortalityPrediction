@@ -11,6 +11,7 @@ import org.apache.spark.SparkContext._
 
 object FeatureConstruction {
 
+  type FeatureArrayTuple = (String, Array[Double])
   type FeatureTuple = ((String, String), Double)
   type LabelTuple = (String, Int)
 
@@ -52,6 +53,38 @@ object FeatureConstruction {
       patients, icuStays, firstNoteDates, hours)
 
     constructBaselineFeatureTuples(sc, filteredPatients, filteredIcuStays, saps2s)
+  }
+
+  /* Construct 3 baseline features: age, sex, SAPS II score */
+  def constructBaselineFeatureArrayTuples(sc: SparkContext, patients: RDD[Patient],
+      icuStays: RDD[IcuStay], saps2s: RDD[Saps2]): RDD[FeatureArrayTuple] = {
+
+    // Join with icuStays for RDD[((patientID, hadmID, icuStayID), Patient)]
+    val patientsWithIcu: RDD[((String, String, String), Patient)] = icuStays.keyBy(_.patientID)
+      .join(patients.keyBy(_.patientID))
+      .map{ case(pid, (icu, p)) => {
+        ((p.patientID, icu.hadmID, icu.icuStayID), p)
+      } }
+
+    val values = patientsWithIcu
+      .join(saps2s.keyBy(s => (s.patientID, s.hadmID, s.icuStayID)))
+      .map({ case((pid, hadmID, icuStayID), (p, s)) => {
+          (pid, (p.age, p.isMale.toDouble, s.score))
+        }
+      })
+
+    values.map(x => (x._1, Array[Double](x._2._1, x._2._2, x._2._3)))
+  }
+
+  /* Construct 3 baseline features: age, sex, SAPS II score */
+  def constructBaselineFeatureArrayTuples(sc: SparkContext, patients: RDD[Patient],
+      icuStays: RDD[IcuStay], saps2s: RDD[Saps2], firstNoteDates: RDD[FirstNoteInfo],
+      hours: Int): RDD[FeatureArrayTuple] = {
+
+    val (filteredPatients, filteredIcuStays) = filterDataOnHoursSinceFirstNote(
+      patients, icuStays, firstNoteDates, hours)
+
+    constructBaselineFeatureArrayTuples(sc, filteredPatients, filteredIcuStays, saps2s)
   }
 
   def generateLabelTuples(patients: RDD[Patient], icuStays: RDD[IcuStay],
@@ -192,5 +225,10 @@ object FeatureConstruction {
       }
 
     (adjustedNotes, startDates)
+  }
+
+  def constructForSVM(sc: SparkContext, features: RDD[FeatureArrayTuple]): RDD[(String, Vector)] = {
+    val tf = features.map(x => (x._1, Vectors.dense(x._2)))
+    tf
   }
 }
