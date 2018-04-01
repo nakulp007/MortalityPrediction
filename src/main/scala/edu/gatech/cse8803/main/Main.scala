@@ -3,9 +3,12 @@ package edu.gatech.cse8803.main
 import java.text.SimpleDateFormat
 
 import edu.gatech.cse8803.ioutils.{CSVUtils, DataLoader}
-import edu.gatech.cse8803.features.FeatureConstruction
+import edu.gatech.cse8803.features.FeatureConstruction._
 
 import edu.gatech.cse8803.model._
+import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics
+import org.apache.spark.mllib.classification.{SVMWithSGD, SVMModel}
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.{SparkConf, SparkContext}
@@ -52,31 +55,31 @@ object Main {
 
     /***************** Process raw data beforehand! *******************/
     // Process for patients' age. Filters for most recent unique IcuStays for unique patients.
-    val (patients, icuStays) = FeatureConstruction.processRawPatientsAndIcuStays(rawPatients, rawIcuStays)
+    val (patients, icuStays) = processRawPatientsAndIcuStays(rawPatients, rawIcuStays)
     //patients.foreach(println)
     println(s"Unique patient count: ${patients.count}")
     //icuStays.foreach(println)
     println(s"Unique IcuStay count: ${icuStays.count}")
 
     // Process notes and get start dates for each patient. Read comments for the function.
-    val (notes, firstNoteDates) = FeatureConstruction.processNotesAndCalculateStartDates(
+    val (notes, firstNoteDates) = processNotesAndCalculateStartDates(
       patients, icuStays, rawNotes)
     println(s"firstNoteDates count: ${firstNoteDates.count}")
 
 
     /************************* Generate labels ******************************/
-    val labelsInIcu = FeatureConstruction.generateLabelTuples(
-      patients, icuStays, FeatureConstruction.InICU())
+    val labelsInIcu = generateLabelTuples(
+      patients, icuStays, InICU())
     //labelsInIcu.foreach(println)
     println(s"${labelsInIcu.count}")
 
-    val labelsIn30Days = FeatureConstruction.generateLabelTuples(
-      patients, icuStays, FeatureConstruction.In30Days())
+    val labelsIn30Days = generateLabelTuples(
+      patients, icuStays, In30Days())
     //labelsIn30Days.foreach(println)
     println(s"${labelsIn30Days.count}")
 
-    val labelsIn1Year = FeatureConstruction.generateLabelTuples(
-      patients, icuStays, FeatureConstruction.In1Year())
+    val labelsIn1Year = generateLabelTuples(
+      patients, icuStays, In1Year())
     //labelsIn1Year.foreach(println)
     println(s"${labelsIn1Year.count}")
 
@@ -84,24 +87,85 @@ object Main {
 
 
     /****************** Baseline Feature Constructions **********************/
-    /* Simple baseline feature construction with base features */
-    val baseFeatures = FeatureConstruction.constructBaselineFeatureArrayTuples(
+    /* Example of simple baseline feature construction with base features */
+    val baseFeatures = constructBaselineFeatureArrayTuples(
       sc, patients, icuStays, rawSaps2s)
     println("------------ Base Features -----------")
     //baseFeatures.foreach(println)
     println(s"Baseline Feature Tuple count: ${baseFeatures.count}")
     println("------------ Base Features End -----------")
 
-    /* Example of adjusting with hours since start time */
-    val baseFeatures12 = FeatureConstruction.constructBaselineFeatureArrayTuples(
-      sc, patients, icuStays, rawSaps2s, firstNoteDates, 12)
-    println("------------ Base Features hr = 12 -----------")
-    //baseFeatures.foreach(println)
-    println(s"Baseline Feature Tuple at 12 hr count: ${baseFeatures12.count}")
-    println("------------ Base Features hr = 12 End -----------")
 
+    /**************** Running baseline model based on hours **************/
+    val (trainPatients, testPatients) = splitPatientIds(sc, patients, 0.7)
+
+    println(s"${trainPatients.count} train & ${testPatients.count} test patients")
+
+    var go = true
+    var hr = 0
+    val maxH = 180
+    while (hr <= 120 && go) {
+      go = runBaseLineModel(sc, trainPatients, testPatients, icuStays, rawSaps2s, firstNoteDates,
+        labelsIn30Days, hr)
+      hr += 12
+    }
 
     sc.stop()
+  }
+
+  val DEFAULT_SEED = 0
+
+  def splitPatientIds(sc: SparkContext, patients: RDD[Patient],
+      trainProportion: Double, seed: Long = DEFAULT_SEED): (RDD[Patient], RDD[Patient]) = {
+    val splits = patients.randomSplit(Array[Double](trainProportion, 1-trainProportion))
+    (splits(0), splits(1))
+  }
+
+  def runBaseLineModel(sc: SparkContext, trainPatients: RDD[Patient], testPatients: RDD[Patient],
+      icuStays: RDD[IcuStay], saps2s: RDD[Saps2], firstNoteDates: RDD[FirstNoteInfo],
+      labels: RDD[LabelTuple], hours: Int): Boolean = {
+    val trainTuples = constructBaselineFeatureArrayTuples(sc, trainPatients, icuStays,
+      saps2s, firstNoteDates, hours)
+    val testTuples = constructBaselineFeatureArrayTuples(sc, testPatients, icuStays,
+      saps2s, firstNoteDates, hours)
+
+    if (trainTuples.count == 0) return false
+
+    val trainingPoints = constructForSVM(trainTuples, labels)
+
+    trainingPoints.cache
+    val numTraining = trainingPoints.count
+    val numTesting = testTuples.count
+
+    val svm = new SVMWithSGD()
+    val svmModel = svm.run(trainingPoints)
+
+    svmModel.clearThreshold // Clears threshold so predict() outputs raw prediction scores.
+
+    /* Making predictions */
+    val trainPreds = trainPatients.keyBy(_.patientID)
+      .join(trainTuples)
+      .map{ case(pid, (p, fArr)) => (pid, Vectors.dense(fArr)) }
+      .join(labels)
+      .map{ case(pid, (vec, label)) => (svmModel.predict(vec), label.toDouble)}
+
+    val testPreds = testPatients.keyBy(_.patientID)
+      .join(testTuples)
+      .map{ case(pid, (p, fArr)) => (pid, Vectors.dense(fArr)) }
+      .join(labels)
+      .map{ case(pid, (vec, label)) => (svmModel.predict(vec), label.toDouble)}
+
+    /* Evaluating predictions */
+    val trainMetrics = new BinaryClassificationMetrics(trainPreds)
+    val testMetrics = new BinaryClassificationMetrics(testPreds)
+
+    val trainAUC = trainMetrics.areaUnderROC
+    val testAUC = testMetrics.areaUnderROC
+    val prc: RDD[(Double, Double)] = testMetrics.pr // RDD[(recall, precision)]
+    println(s"${hours},${numTraining},${numTesting},${trainAUC},${testAUC}")
+
+
+    true
   }
 
   def createContext(appName: String, masterUrl: String): SparkContext = {

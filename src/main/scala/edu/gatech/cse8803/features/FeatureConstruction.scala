@@ -5,6 +5,7 @@ import java.sql.Date
 import edu.gatech.cse8803.model._
 import org.apache.spark.SparkContext
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.rdd.RDD
 import org.apache.spark.SparkContext._
 
@@ -227,8 +228,10 @@ object FeatureConstruction {
     (adjustedNotes, startDates)
   }
 
-  def constructForSVM(sc: SparkContext, features: RDD[FeatureArrayTuple]): RDD[(String, Vector)] = {
-    val tf = features.map(x => (x._1, Vectors.dense(x._2)))
-    tf
+  def constructForSVM(features: RDD[FeatureArrayTuple], labels: RDD[LabelTuple]): RDD[LabeledPoint] = {
+    val points = labels.join(features)
+      .map{ case(pid, (label, fArr)) => new LabeledPoint(label.toDouble, Vectors.dense(fArr)) }
+
+    points
   }
 }
