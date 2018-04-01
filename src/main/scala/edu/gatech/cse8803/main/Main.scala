@@ -36,7 +36,6 @@ object Main {
 
     /*  CONFIGURATION  END  */
 
-
     import org.apache.log4j.Logger
     import org.apache.log4j.Level
 
@@ -51,7 +50,7 @@ object Main {
     val (rawPatients, rawDiagnostics, rawMedications, rawLabResults,
       rawNotes, rawComorbidities, rawIcuStays, rawSaps2s) = DataLoader.loadRddRawData(sqlContext, dataDir)
 
-    /***************** Process raw data beforehand *******************/
+    /***************** Process raw data beforehand! *******************/
     // Process for patients' age. Filters for most recent unique IcuStays for unique patients.
     val (patients, icuStays) = FeatureConstruction.processRawPatientsAndIcuStays(rawPatients, rawIcuStays)
     //patients.foreach(println)
@@ -64,8 +63,27 @@ object Main {
       patients, icuStays, rawNotes)
     println(s"firstNoteDates count: ${firstNoteDates.count}")
 
-    /****************** Baseline Feature Constructions **********************/
 
+    /************************* Generate labels ******************************/
+    val labelsInIcu = FeatureConstruction.generateLabelTuples(
+      patients, icuStays, FeatureConstruction.InICU())
+    //labelsInIcu.foreach(println)
+    println(s"${labelsInIcu.count}")
+
+    val labelsIn30Days = FeatureConstruction.generateLabelTuples(
+      patients, icuStays, FeatureConstruction.In30Days())
+    //labelsIn30Days.foreach(println)
+    println(s"${labelsIn30Days.count}")
+
+    val labelsIn1Year = FeatureConstruction.generateLabelTuples(
+      patients, icuStays, FeatureConstruction.In1Year())
+    //labelsIn1Year.foreach(println)
+    println(s"${labelsIn1Year.count}")
+
+    //labelsInIcu.join(labelsIn30Days).join(labelsIn1Year).foreach(println)
+
+
+    /****************** Baseline Feature Constructions **********************/
     /* Simple baseline feature construction with base features */
     val baseFeatures = FeatureConstruction.constructBaselineFeatureTuples(
       sc, patients, icuStays, rawSaps2s)
@@ -74,7 +92,7 @@ object Main {
     println(s"Baseline Feature Tuple count: ${baseFeatures.count}")
     println("------------ Base Features End -----------")
 
-    /* Adjusting with hours since start time */
+    /* Example of adjusting with hours since start time */
     val baseFeatures12 = FeatureConstruction.constructBaselineFeatureTuples(
       sc, patients, icuStays, rawSaps2s, firstNoteDates, 12)
     println("------------ Base Features hr = 12 -----------")
@@ -82,8 +100,6 @@ object Main {
     println(s"Baseline Feature Tuple at 12 hr count: ${baseFeatures12.count}")
     println("------------ Base Features hr = 12 End -----------")
 
-    //run models on created features
-    //runMultiModels
 
     sc.stop()
   }

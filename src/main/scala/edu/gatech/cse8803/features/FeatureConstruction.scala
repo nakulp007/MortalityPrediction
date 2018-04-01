@@ -12,6 +12,7 @@ import org.apache.spark.SparkContext._
 object FeatureConstruction {
 
   type FeatureTuple = ((String, String), Double)
+  type LabelTuple = (String, Int)
 
   type FirstNoteInfo = (String, (Date, Boolean)) // Boolean = from note? (or from ICU inDate)
 
@@ -53,6 +54,31 @@ object FeatureConstruction {
     constructBaselineFeatureTuples(sc, filteredPatients, filteredIcuStays, saps2s)
   }
 
+  def generateLabelTuples(patients: RDD[Patient], icuStays: RDD[IcuStay],
+      mortType: MortalityType): RDD[LabelTuple] = {
+
+    val MILLISECONDS_IN_DAY = 24L * 60 * 60 * 1000
+
+    val tuples = patients.keyBy(_.patientID).join(icuStays.keyBy(_.patientID))
+      .map{ case(pid, (p, icu)) => {
+          val d = p.dod.getTime
+          val outd = icu.outDate.getTime
+          val diedInThisPeriod = mortType match {
+            case InICU() => d >= icu.inDate.getTime && d <= outd
+            case In30Days() => d > outd &&
+              ((d - outd) / MILLISECONDS_IN_DAY) <= 30
+            case In1Year() => d > outd &&
+              ((d - outd) / MILLISECONDS_IN_DAY) > 30 &&
+              ((d - outd) / MILLISECONDS_IN_DAY) <= 365
+          }
+          if (diedInThisPeriod) (pid, 1)
+          else (pid, 0)
+        }
+      }
+
+    tuples
+  }
+
   /* Filter for patients and icuStays remaining in ICU x hours after their first note */
   def filterDataOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay],
       firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay]) = {
@@ -68,6 +94,25 @@ object FeatureConstruction {
       }
 
     (joined.map(x => x._2._1._1), joined.map(x => x._2._1._2))
+  }
+
+  /* Filter for patients and icuStays remaining in ICU x hours after their first note */
+  def filterDataOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay], notes: RDD[Note],
+      firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay], RDD[Note]) = {
+    if (hours <= 0) return (patients, icuStays, notes)
+
+    val (fPats, fIcus) = filterDataOnHoursSinceFirstNote(patients, icuStays, firstNoteDates, hours)
+
+    val MILLISECONDS_IN_HOUR = 60L * 60 * 1000
+    val filteredNotes = firstNoteDates.join(notes.keyBy(_.patientID))
+      .filter{ case(pid, ((date, b), note)) => {
+          val bound = date.getTime + MILLISECONDS_IN_HOUR*hours
+          note.chartDate.getTime <= bound
+        }
+      }
+      .map{ case(pid, ((date, b), note)) => note }
+
+    (fPats, fIcus, filteredNotes)
   }
 
   /**
