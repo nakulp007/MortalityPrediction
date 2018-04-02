@@ -4,6 +4,7 @@ import java.sql.Date
 
 import edu.gatech.cse8803.model._
 import org.apache.spark.SparkContext
+import org.apache.spark.mllib.clustering.{DistributedLDAModel, LDA}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.rdd.RDD

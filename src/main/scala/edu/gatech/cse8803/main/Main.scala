@@ -22,6 +22,7 @@ object Main {
     /*  CONFIGURATION  START  */
 
     //location of MIMIC and other input files
+    //val dataDir = "data1000"
     val dataDir = "data"
     //location of the program generated features file(s)
     val featureDir = "src/main/scala/edu/gatech/cse8803/output_features"
@@ -71,17 +72,17 @@ object Main {
     val labelsInIcu = generateLabelTuples(
       patients, icuStays, InICU())
     //labelsInIcu.foreach(println)
-    println(s"${labelsInIcu.count}")
+    println(s"Num labels in ICU: ${labelsInIcu.count}")
 
     val labelsIn30Days = generateLabelTuples(
       patients, icuStays, In30Days())
     //labelsIn30Days.foreach(println)
-    println(s"${labelsIn30Days.count}")
+    println(s"Num labels in 30 Day: ${labelsIn30Days.count}")
 
     val labelsIn1Year = generateLabelTuples(
       patients, icuStays, In1Year())
     //labelsIn1Year.foreach(println)
-    println(s"${labelsIn1Year.count}")
+    println(s"Num labels in 1 Year: ${labelsIn1Year.count}")
 
     //labelsInIcu.join(labelsIn30Days).join(labelsIn1Year).foreach(println)
 
@@ -103,10 +104,10 @@ object Main {
 
     var go = true
     var hr = 0
-    val maxH = 180
-    while (hr <= 120 && go) {
+    val maxH = 240
+    while (hr <= maxH && go) {
       go = runBaseLineModel(sc, trainPatients, testPatients, icuStays, rawSaps2s, firstNoteDates,
-        labelsIn30Days, hr)
+        labelsIn1Year, hr)
       hr += 12
     }
 
@@ -134,8 +135,20 @@ object Main {
     val trainingPoints = constructForSVM(trainTuples, labels)
 
     trainingPoints.cache
-    val numTraining = trainingPoints.count
-    val numTesting = testTuples.count
+
+    // Count number of all instances and postive ones
+    val (numTraining, numTrainingPositive) = trainingPoints
+      .aggregate((0, 0))(
+        (u, point) => (u._1+1, u._2+point.label.toInt),
+        (u1, u2) => (u1._1+u2._1, u1._2+u2._2))
+
+    val (numTesting, numTestingPositive) = testTuples.join(labels).map(x => x._2._2)
+      .aggregate((0, 0))(
+        (u, l) => (u._1+1, u._2+l),
+        (u1, u2) => (u1._1+u2._1, u1._2+u2._2))
+
+    //val numTraining = trainingPoints.count
+    //val numTesting = testTuples.count
 
     val svm = new SVMWithSGD()
     val svmModel = svm.run(trainingPoints)
@@ -162,7 +175,7 @@ object Main {
     val trainAUC = trainMetrics.areaUnderROC
     val testAUC = testMetrics.areaUnderROC
     val prc: RDD[(Double, Double)] = testMetrics.pr // RDD[(recall, precision)]
-    println(s"${hours},${numTraining},${numTesting},${trainAUC},${testAUC}")
+    println(s"${hours},${numTraining},${numTrainingPositive},${numTesting},${numTestingPositive},${trainAUC},${testAUC}")
 
 
     true
