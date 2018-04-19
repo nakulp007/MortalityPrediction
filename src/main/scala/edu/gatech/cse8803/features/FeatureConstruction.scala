@@ -228,6 +228,87 @@ object FeatureConstruction {
 
     (adjustedNotes, startDates)
   }
+  
+  def retrospectiveTopicModel( notes: RDD[Note], stopWords : Set[String]) : RDD[FeatureArrayTuple] = {
+
+    val notesRdd  = notes.map(x => (x.patientID, x.text)).reduceByKey((x, y) => x + " " + y)
+
+    val filteredNotes = notesRdd.map(x => (x._1, filterSpecialCharacters(x._2)))
+
+    println(s"allpatients: ${filteredNotes.count}")
+
+    // create index map for patients
+    val patientsDocsMap = filteredNotes.map(x => x._1).collect().zipWithIndex.toMap
+    //patientsDocsMap.take(5).foreach(println)
+
+    val patientsDocsMapSwap =  patientsDocsMap.map(row => (row._2, row._1))
+
+    // create corpus from entire text 
+    val corpus: RDD[String] = filteredNotes.map(x => x._2)
+
+    //  tokenize work counts
+    val tokenized: RDD[Seq[String]] = corpus.map(_.toLowerCase.split("\\s")).map(_.filter(_.length > 3).filter(_.forall(java.lang.Character.isLetter)))
+
+
+    // create vocabularay and remove stop words as well
+    val vocabArray: Array[String] = corpus.map(_.toLowerCase.split("\\s"))
+                                    .map(_.filter(_.length > 3)
+                                    .filter(_.forall(java.lang.Character.isLetter)))
+                                    .flatMap(_.map(_ -> 1L))
+                                    .reduceByKey(_ + _)
+                                    .filter(word => !stopWords.contains(word._1))
+                                    .map(_._1).collect()
+
+   
+
+   
+   val vocab: Map[String, Int] = vocabArray.zipWithIndex.toMap
+
+  // Convert documents into term count vectors
+  val documents: RDD[(Long, Vector)] = tokenized.zipWithIndex.map { case (tokens, id) =>
+  val counts = new mutable.HashMap[Int, Double]()
+  tokens.foreach { term =>
+      if (vocab.contains(term)) {
+        val idx = vocab(term)
+        counts(idx) = counts.getOrElse(idx, 0.0) + 1.0
+      }
+    }
+    (id, Vectors.sparse(vocab.size, counts.toSeq))
+  }                               
+
+  //documents.take(5).foreach(println)  
+
+  // run LDA model
+  val lda = new LDA().setK(50).setMaxIterations(25)
+
+  val ldaModel = lda.run(documents)
+
+  val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 10)
+  val topics = topicIndices.map { case (terms, termWeights) =>
+      terms.zip(termWeights).map { case (term, weight) => (vocabArray(term.toInt), weight) }
+    }
+
+
+  val distLdaModel = ldaModel.asInstanceOf[DistributedLDAModel]
+  val topTopicsForDoc = distLdaModel.topicDistributions
+  //topTopicsForDoc.take(5).foreach(println)
+
+
+  println(s"documents-Count: ${topTopicsForDoc.count}")
+
+  println(s"topics-Type: ${topTopicsForDoc.getClass}")
+
+  val featuresRdd = topTopicsForDoc.map(row => (patientsDocsMapSwap(row._1.toInt), row._2))
+  //featuresRdd.take(5).foreach(println)
+
+  val finalNoteFeatures = featuresRdd.map(x => (x._1, x._2.toArray))
+
+  println(s"final-RDD type : ${featuresRdd.getClass}")
+
+  (finalNoteFeatures)
+
+
+  }
 
   def constructForSVM(features: RDD[FeatureArrayTuple], labels: RDD[LabelTuple]): RDD[LabeledPoint] = {
     val points = labels.join(features)
