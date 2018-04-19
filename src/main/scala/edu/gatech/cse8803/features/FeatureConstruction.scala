@@ -309,6 +309,15 @@ object FeatureConstruction {
 
 
   }
+  
+  def filterSpecialCharacters(document: String) = {
+
+    document.replaceAll( """[! @ # $ % ^ & * ( ) \[ \] . \\ / _ { } + - − , " ' ~ ; : ` ? = > < --]""", " ")
+      //.replaceAll("""\.\s""", " ")
+      .replaceAll("""\w*\d\w*""", " ")        //replace digits
+      .replaceAll("""\s[A-Z,a-z]\s""", " ")   //replace single digit char
+      .replaceAll("""\s[A-Z,a-z]\s""", " ")   //replace consecutive single digit char
+  }
 
   def constructForSVM(features: RDD[FeatureArrayTuple], labels: RDD[LabelTuple]): RDD[LabeledPoint] = {
     val points = labels.join(features)
