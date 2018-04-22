@@ -158,17 +158,23 @@ object DataLoader {
 
     sqlContext.sql(
       """
-        |SELECT SUBJECT_ID, HADM_ID, CHARTDATE, CHARTTIME, CATEGORY, DESCRIPTION, TEXT
+        |SELECT SUBJECT_ID, HADM_ID, CHARTDATE, CHARTTIME, CATEGORY, DESCRIPTION, TEXT, STORETIME
         |FROM NOTEEVENTS
       """.stripMargin)
     .map(r => r)
-      .filter(r => !r(4).toString.toLowerCase.contains("discharge summary"))
+      .filter(r => !r(4).toString.toLowerCase.contains("discharge"))
+      .filter(r => !r(1).toString.isEmpty) // outpatients and patients not admitted to ICU don't have HADM_ID
       .map(r => Note(
         r(0).toString,
         r(1).toString,
         if (r(3).toString.isEmpty) {
-          val dateString = if (r(2).toString.trim.length == 10) r(2).toString.trim + " 00:00:00" else r(2).toString.trim
-          new Date(dateFormat.parse(dateString).getTime)
+          if (r(7).toString.isEmpty) { // Check if STORETIME is available to use.
+            val dateString = if (r(2).toString.trim.length == 10) r(2).toString.trim + " 00:00:00" else r(2).toString.trim
+            new Date(dateFormat.parse(dateString).getTime)
+          } else {
+            val dateString = if (r(7).toString.trim.length == 10) r(7).toString.trim + " 00:00:00" else r(7).toString.trim
+            new Date(dateFormat.parse(dateString).getTime)
+          }
         } else {
           val dateString = if (r(3).toString.trim.length == 10) r(3).toString.trim + " 00:00:00" else r(3).toString.trim
           new Date(dateFormat.parse(dateString).getTime)
