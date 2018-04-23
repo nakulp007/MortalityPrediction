@@ -6,16 +6,18 @@ import edu.gatech.cse8803.ioutils.{CSVUtils, DataLoader}
 import edu.gatech.cse8803.features.FeatureConstruction._
 
 import edu.gatech.cse8803.model._
+import org.apache.spark.ml.param.{Param}
+import org.apache.spark.ml.tuning.{CrossValidator}
 import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics
 import org.apache.spark.mllib.classification.{SVMWithSGD, SVMModel}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.{SparkConf, SparkContext}
 
 import java.sql.Date
 import java.text.SimpleDateFormat
-
 
 object Main {
   def main(args: Array[String]) {
@@ -107,88 +109,216 @@ object Main {
 
 
     /**************** Running baseline model based on hours **************/
-    val (trainPatients, testPatients) = splitPatientIds(sc, patients, 0.7)
+    val (trainPatients, testPatients) = splitPatientIds(sc, patients, 0.7, true)
 
     println(s"${trainPatients.count} train & ${testPatients.count} test patients")
 
-    var go = true
-    var hr = 0
-    val maxH = 240
-    while (hr <= maxH && go) {
-      go = runBaseLineModel(sc, trainPatients, testPatients, icuStays, rawSaps2s, firstNoteDates,
-        labelsInIcu, hr)
-      hr += 12
-    }
+    val labels = labelsInIcu // Change this to change the label type
+
+    // One thing to watch out for from here on out is the fact that labels does not
+    // get filtered or subsampled. The RDD is kept exactly the same!
+    val subsampledTrainingPatients = subsampleTrainingPatients(trainPatients, labels, true)
+    println(s"${subsampledTrainingPatients.count} subsampled training patients")
+
+    runBaseLineModel(sc, subsampledTrainingPatients, testPatients,
+        icuStays, rawSaps2s, firstNoteDates,
+        labels)
 
     sc.stop()
   }
 
-  val DEFAULT_SEED = 5
-
   def splitPatientIds(sc: SparkContext, patients: RDD[Patient],
-      trainProportion: Double, seed: Long = DEFAULT_SEED): (RDD[Patient], RDD[Patient]) = {
-    val splits = patients.randomSplit(Array[Double](trainProportion, 1-trainProportion))
-    (splits(0), splits(1))
+      trainProportion: Double, exact: Boolean): (RDD[Patient], RDD[Patient]) = {
+    if (!exact) {
+      val splits = patients.randomSplit(Array[Double](trainProportion, 1-trainProportion))
+      (splits(0), splits(1))
+    } else {
+      val numToSample = (patients.count * 0.7).toInt
+      val sample = sc.makeRDD(patients.takeSample(false, numToSample))
+      (sample, patients.subtract(sample))
+    }
+  }
+
+  // Adjusts the ratio of negative to positive examples to be 7:3.
+  // Does nothing if the ratio is already smaller than that.
+  def subsampleTrainingPatients(patients: RDD[Patient], labels: RDD[LabelTuple], exact: Boolean): RDD[Patient] = {
+    val sc = labels.context
+
+    // Count total number of training instances and postivie instances
+    val labelsForThesePatients = patients.keyBy(_.patientID).join(labels)
+      .map{ case(pid, (p, label)) => (pid, label) }
+    val (numTraining, numTrainingPositive) = labelsForThesePatients
+      .aggregate((0, 0))(
+        (u, labelPair) => (u._1+1, u._2+labelPair._2),
+        (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
+      )
+
+    println(s"${numTrainingPositive} out of ${numTraining} training examples are positive.")
+
+    // No need to subsample if the ratio is already high
+    if (numTrainingPositive / numTraining.toDouble >= 0.3) {
+      println("Negative to positive examples proportion is already 7:3 or smaller.")
+      return patients
+    }
+
+    val positiveLabels = labelsForThesePatients.filter(_._2 == 1)
+    val negativeLabels = labelsForThesePatients.filter(_._2 == 0)
+
+    // We want to end up with a 7:3 ratio of negative to positive examples
+
+    // Sample without replacement
+    var sample = negativeLabels
+    if (!exact) {
+      val propToSample = (numTrainingPositive / 0.3 * 0.7) / (numTraining - numTrainingPositive)
+      sample = negativeLabels.sample(false, propToSample)
+    } else {
+      val numToSample = (numTrainingPositive / 0.3 * 0.7).toInt
+      sample = sc.makeRDD(negativeLabels.takeSample(false, numToSample))
+    }
+
+    // Union the negative with the subsampled positive labels
+    val adjustedLabels = sc.union(positiveLabels, sample)
+
+    val adjustedPatients = patients.keyBy(_.patientID).join(adjustedLabels)
+      .map{ case((pid, (p, label))) => p }
+
+    adjustedPatients
   }
 
   def runBaseLineModel(sc: SparkContext, trainPatients: RDD[Patient], testPatients: RDD[Patient],
       icuStays: RDD[IcuStay], saps2s: RDD[Saps2], firstNoteDates: RDD[FirstNoteInfo],
-      labels: RDD[LabelTuple], hours: Int): Boolean = {
-    /*val trainTuples = constructBaselineFeatureArrayTuples(sc, trainPatients, icuStays,
-      saps2s, firstNoteDates, hours)
-    val testTuples = constructBaselineFeatureArrayTuples(sc, testPatients, icuStays,
-      saps2s, firstNoteDates, hours)*/
+      labels: RDD[LabelTuple]): Boolean = {
+    println("B---------------- Begin baseline model ------------------------")
+    /************************* Create model ************************/
+    // Split into folds
+    val numFolds = 5
+    val splitProportions = new Array[Double](numFolds)
+    for (i <- 0 to (numFolds - 1)) splitProportions(i) = 1.0 / numFolds
+    val splits = trainPatients.randomSplit(splitProportions)
 
-    val trainTuples = constructBaselineFeatureTuples(sc, trainPatients, icuStays,
-      saps2s, firstNoteDates, hours)
-    val testTuples = constructBaselineFeatureTuples(sc, testPatients, icuStays,
-      saps2s, firstNoteDates, hours)
+    val arrayCvTrainPoints = new Array[RDD[LabeledPoint]](numFolds)
+    val arrayCvTestPoints = new Array[RDD[LabeledPoint]](numFolds)
+    for (i <- 0 to (numFolds - 1)) {
+      val cvTrainTuples = constructBaselineFeatureTuples(
+        sc, trainPatients.subtract(splits(i)), icuStays, saps2s)
+      arrayCvTrainPoints(i) = constructForSVMSparse(cvTrainTuples, labels)
+      arrayCvTrainPoints(i).cache
 
-    if (trainTuples.count == 0) return false
+      val cvTestTuples = constructBaselineFeatureTuples(sc, splits(i), icuStays, saps2s)
+      arrayCvTestPoints(i) = constructForSVMSparse(cvTestTuples, labels)
+      //arrayCvTestPoints(i).cache
+    }
 
+    println("B------- Run cross validation for training model --------")
+    /************ Cross validate for the best hyper parameters ***********/
+    val interceptConds: List[Boolean] = List(false, true) // false is default
+    val numIterationsParams: List[Int] = List(400, 800, 1200) // 100 is default
+    val regParams: List[Double] = List(0.01, 0.1, 1, 10, 100) // 0.0 is default
+
+    var maxAUC = 0.0
+    var bestInterceptCond = false
+    var bestNumIterations = 100
+    var bestRegParam = 0.0
+
+    var sumAUC = 0.0
+    for (interceptCond <- interceptConds) {
+      for (numIterations <- numIterationsParams) {
+        for (regParam <- regParams) {
+          val svm = new SVMWithSGD()
+          svm.optimizer
+            .setNumIterations(numIterations)
+            .setRegParam(regParam)
+          svm.setIntercept(interceptCond)
+
+          sumAUC = 0.0
+          for (i <- 0 to (numFolds - 1)) {
+            val svmModel = svm.run(arrayCvTrainPoints(i))
+            svmModel.clearThreshold
+
+            val preds = arrayCvTestPoints(i)
+              .map(point => (svmModel.predict(point.features), point.label))
+            val metrics = new BinaryClassificationMetrics(preds)
+            sumAUC += metrics.areaUnderROC
+          }
+          val auc = sumAUC / numFolds // get average AUC
+          println(s"${interceptCond},${numIterations},${regParam},${auc}")
+          if (auc > maxAUC) {
+            maxAUC = auc
+            bestInterceptCond = interceptCond
+            bestNumIterations = numIterations
+            bestRegParam = regParam
+          }
+        }
+      }
+    }
+
+    println(s"Best interceptCond: ${bestInterceptCond}")
+    println(s"Best numIterations: ${bestNumIterations}")
+    println(s"Best regParam: ${bestRegParam}")
+
+
+    // Use the best parameters to construct a model for the whole training set
+    val trainTuples = constructBaselineFeatureTuples(sc, trainPatients, icuStays, saps2s)
     val trainingPoints = constructForSVMSparse(trainTuples, labels)
-    val testingPoints = constructForSVMSparse(testTuples, labels)
-
     trainingPoints.cache
-    testingPoints.cache
 
-    // Count number of all instances and postive ones
+    // Count number of training instances and positive ones among them
     val (numTraining, numTrainingPositive) = trainingPoints
       .aggregate((0, 0))(
         (u, point) => (u._1+1, u._2+point.label.toInt),
         (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
       )
-
-    val (numTesting, numTestingPositive) = testingPoints
-      .aggregate((0, 0))(
-        (u, point) => (u._1+1, u._2+point.label.toInt),
-        (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
-      )
+    println(s"Number of training instances: ${numTraining}")
+    println(s"Number of positive in train: ${numTrainingPositive}")
 
     val svm = new SVMWithSGD()
-    //svm.setIntercept(false)
-    val svmModel = svm.run(trainingPoints)
+    svm.optimizer
+      .setNumIterations(bestNumIterations)
+      .setRegParam(bestRegParam)
+    svm.setIntercept(bestInterceptCond)
 
+    val svmModel = svm.run(trainingPoints)
     svmModel.clearThreshold // Clears threshold so predict() outputs raw prediction scores.
 
-    /* Making predictions */
+
+    println("B----------- Test with time varying testing set --------------")
+    // Evaluate the trained model with the training set
     val trainPreds = trainingPoints
       .map(point => (svmModel.predict(point.features), point.label))
-
-    val testPreds = testingPoints
-      .map(point => (svmModel.predict(point.features), point.label))
-
-    /* Evaluating predictions */
     val trainMetrics = new BinaryClassificationMetrics(trainPreds)
-    val testMetrics = new BinaryClassificationMetrics(testPreds)
-
     val trainAUC = trainMetrics.areaUnderROC
-    val testAUC = testMetrics.areaUnderROC
-    val prc: RDD[(Double, Double)] = testMetrics.pr // RDD[(recall, precision)]
-    println(s"${hours},${numTraining},${numTrainingPositive},${numTesting},${numTestingPositive},${trainAUC},${testAUC}")
+    println(s"Final training AUC: ${trainAUC}")
 
 
+    // Test the model across time with the test data
+    var go = true
+    var hr = 0
+    val maxH = 240
+    while (hr <= maxH && go) {
+      val testTuples = constructBaselineFeatureTuples(sc, testPatients, icuStays,
+        saps2s, firstNoteDates, hr)
+      val testingPoints = constructForSVMSparse(testTuples, labels)
+
+      // Get total number of test patients and positive ones among them
+      val (numTesting, numTestingPositive) = testingPoints
+        .aggregate((0, 0))(
+          (u, point) => (u._1+1, u._2+point.label.toInt),
+          (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
+        )
+
+      // Make predictions using the SVM Model
+      val testPreds = testingPoints
+        .map(point => (svmModel.predict(point.features), point.label))
+
+      val testMetrics = new BinaryClassificationMetrics(testPreds)
+      val testAUC = testMetrics.areaUnderROC
+      println(s"${hr},${numTesting},${numTestingPositive},${trainAUC},${testAUC}")
+      hr += 12
+    }
+    println("B---------------- Baseline model test completed -------------------")
     true
+
+    //println(s"${hours},${numTraining},${numTrainingPositive},${numTesting},${numTestingPositive},${trainAUC},${testAUC}")
   }
 
   def createContext(appName: String, masterUrl: String): SparkContext = {
