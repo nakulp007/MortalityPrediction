@@ -345,4 +345,34 @@ object FeatureConstruction {
 
     points
   }
+
+  def constructForSVMSparse(features: RDD[FeatureTuple], labels: RDD[LabelTuple]): RDD[LabeledPoint] = {
+    features.cache
+
+    /** create a feature name to id map*/
+    val fmap = features
+      .map(x => (x._1._2.toLowerCase, x._2))
+      .aggregateByKey(0)(
+        (u, d) => 0,
+        (u1, u2) => 0)
+      .zipWithIndex.map(x => (x._1._1, x._2))
+      .collectAsMap
+
+    val sc = features.context
+    val broadcastFmap = sc.broadcast(fmap)
+
+    /** transform input feature */
+    val tf = features
+      .map(x => (x._1._1, ((broadcastFmap.value get x._1._2.toLowerCase).get.toInt, x._2)))
+      .groupByKey
+
+    broadcastFmap.unpersist
+
+    val result = tf.map(x => (x._1, Vectors.sparse(fmap.size, x._2.toSeq)))
+
+    val points = result.join(labels)
+      .map{ case((pid, (vector, label))) => new LabeledPoint(label.toDouble, vector) }
+
+    points
+  }
 }

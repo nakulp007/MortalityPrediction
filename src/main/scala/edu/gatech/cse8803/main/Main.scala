@@ -96,7 +96,9 @@ object Main {
 
     /****************** Baseline Feature Constructions **********************/
     /* Example of simple baseline feature construction with base features */
-    val baseFeatures = constructBaselineFeatureArrayTuples(
+    //val baseFeatures = constructBaselineFeatureArrayTuples(
+    //  sc, patients, icuStays, rawSaps2s)
+    val baseFeatures = constructBaselineFeatureTuples(
       sc, patients, icuStays, rawSaps2s)
     println("------------ Base Features -----------")
     //baseFeatures.foreach(println)
@@ -121,7 +123,7 @@ object Main {
     sc.stop()
   }
 
-  val DEFAULT_SEED = 11
+  val DEFAULT_SEED = 5
 
   def splitPatientIds(sc: SparkContext, patients: RDD[Patient],
       trainProportion: Double, seed: Long = DEFAULT_SEED): (RDD[Patient], RDD[Patient]) = {
@@ -132,48 +134,49 @@ object Main {
   def runBaseLineModel(sc: SparkContext, trainPatients: RDD[Patient], testPatients: RDD[Patient],
       icuStays: RDD[IcuStay], saps2s: RDD[Saps2], firstNoteDates: RDD[FirstNoteInfo],
       labels: RDD[LabelTuple], hours: Int): Boolean = {
-    val trainTuples = constructBaselineFeatureArrayTuples(sc, trainPatients, icuStays,
+    /*val trainTuples = constructBaselineFeatureArrayTuples(sc, trainPatients, icuStays,
       saps2s, firstNoteDates, hours)
     val testTuples = constructBaselineFeatureArrayTuples(sc, testPatients, icuStays,
+      saps2s, firstNoteDates, hours)*/
+
+    val trainTuples = constructBaselineFeatureTuples(sc, trainPatients, icuStays,
+      saps2s, firstNoteDates, hours)
+    val testTuples = constructBaselineFeatureTuples(sc, testPatients, icuStays,
       saps2s, firstNoteDates, hours)
 
     if (trainTuples.count == 0) return false
 
-    val trainingPoints = constructForSVM(trainTuples, labels)
+    val trainingPoints = constructForSVMSparse(trainTuples, labels)
+    val testingPoints = constructForSVMSparse(testTuples, labels)
 
     trainingPoints.cache
+    testingPoints.cache
 
     // Count number of all instances and postive ones
     val (numTraining, numTrainingPositive) = trainingPoints
       .aggregate((0, 0))(
         (u, point) => (u._1+1, u._2+point.label.toInt),
-        (u1, u2) => (u1._1+u2._1, u1._2+u2._2))
+        (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
+      )
 
-    val (numTesting, numTestingPositive) = testTuples.join(labels).map(x => x._2._2)
+    val (numTesting, numTestingPositive) = testingPoints
       .aggregate((0, 0))(
-        (u, l) => (u._1+1, u._2+l),
-        (u1, u2) => (u1._1+u2._1, u1._2+u2._2))
-
-    //val numTraining = trainingPoints.count
-    //val numTesting = testTuples.count
+        (u, point) => (u._1+1, u._2+point.label.toInt),
+        (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
+      )
 
     val svm = new SVMWithSGD()
+    //svm.setIntercept(false)
     val svmModel = svm.run(trainingPoints)
 
     svmModel.clearThreshold // Clears threshold so predict() outputs raw prediction scores.
 
     /* Making predictions */
-    val trainPreds = trainPatients.keyBy(_.patientID)
-      .join(trainTuples)
-      .map{ case(pid, (p, fArr)) => (pid, Vectors.dense(fArr)) }
-      .join(labels)
-      .map{ case(pid, (vec, label)) => (svmModel.predict(vec), label.toDouble)}
+    val trainPreds = trainingPoints
+      .map(point => (svmModel.predict(point.features), point.label))
 
-    val testPreds = testPatients.keyBy(_.patientID)
-      .join(testTuples)
-      .map{ case(pid, (p, fArr)) => (pid, Vectors.dense(fArr)) }
-      .join(labels)
-      .map{ case(pid, (vec, label)) => (svmModel.predict(vec), label.toDouble)}
+    val testPreds = testingPoints
+      .map(point => (svmModel.predict(point.features), point.label))
 
     /* Evaluating predictions */
     val trainMetrics = new BinaryClassificationMetrics(trainPreds)
