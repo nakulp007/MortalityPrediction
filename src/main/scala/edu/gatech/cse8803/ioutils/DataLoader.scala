@@ -151,7 +151,9 @@ object DataLoader {
         if (!r(4).toString.isEmpty) r(4).toString.toDouble else 0.0
       ))
   }
-
+  
+	//subject_id, hadm_id, chartdate, charttime, category, description, text, storetime
+	//SUBJECT_ID, HADM_ID, CHARTDATE, CHARTTIME, CATEGORY, DESCRIPTION, TEXT, STORETIME
   def loadNoteRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[Note] = {
     List(inputPath + "/NOTEEVENTS.csv")
       .foreach(CSVUtils.loadCSVAsTable(sqlContext, _, "NOTEEVENTS"))
