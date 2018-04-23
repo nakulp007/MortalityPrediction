@@ -251,8 +251,7 @@ object FeatureConstruction {
     (filteredPatients, filteredIcuStays)
   }
 
-  def retrospectiveTopicModel( notes: RDD[Note], stopWords : Set[String]) : RDD[FeatureArrayTuple] = {
-
+  def retrospectiveTopicModel(notes: RDD[Note], stopWords : Set[String]) : RDD[FeatureArrayTuple] = {
     val notesRdd  = notes.map(x => (x.patientID, x.text)).reduceByKey((x, y) => x + " " + y)
 
     val filteredNotes = notesRdd.map(x => (x._1, filterSpecialCharacters(x._2)))
