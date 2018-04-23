@@ -252,50 +252,60 @@ object FeatureConstruction {
   }
 
   def retrospectiveTopicModel(notes: RDD[Note], stopWords : Set[String]) : RDD[FeatureArrayTuple] = {
-    val notesRdd  = notes.map(x => (x.patientID, x.text)).reduceByKey((x, y) => x + " " + y)
+    val sc = notes.context
 
-    val filteredNotes = notesRdd.map(x => (x._1, filterSpecialCharacters(x._2)))
+    val filteredNotes  = notes.map(x => (x.patientID, filterSpecialCharacters(x.text)))
+      .reduceByKey((x, y) => x + " " + y)
 
-    println(s"allpatients: ${filteredNotes.count}")
+    println(s"Filtered notes count: ${filteredNotes.count}")
 
     // create index map for patients
-    val patientsDocsMap = filteredNotes.map(x => x._1).collect().zipWithIndex.toMap
+    //val patientsDocsMap = filteredNotes.map(x => x._1).collect().zipWithIndex.toMap
     //patientsDocsMap.take(5).foreach(println)
 
-    val patientsDocsMapSwap =  patientsDocsMap.map(row => (row._2, row._1))
-
+    val patientsDocsMapSwap = filteredNotes.map(x => x._1)
+      .zipWithIndex
+      .map(x => (x._2, x._1))
+      .collectAsMap
+    println(s"1")
     // create corpus from entire text
     val corpus: RDD[String] = filteredNotes.map(x => x._2)
+    println(s"2")
 
-    //  tokenize work counts
-    val tokenized: RDD[Seq[String]] = corpus.map(_.toLowerCase.split("\\s")).map(_.filter(_.length > 3).filter(_.forall(java.lang.Character.isLetter)))
+    //  tokenize word counts
+    val tokenized: RDD[Seq[String]] = corpus.map(_.toLowerCase.split("\\s"))
+      .map(_.filter(_.length > 3).filter(_.forall(java.lang.Character.isLetter)))
+    println(s"3")
 
-
+    val broadcastStopWords = sc.broadcast(stopWords)
     // create vocabularay and remove stop words as well
-    val vocabArray: Array[String] = corpus.map(_.toLowerCase.split("\\s"))
-                                    .map(_.filter(_.length > 3)
-                                    .filter(_.forall(java.lang.Character.isLetter)))
-                                    .flatMap(_.map(_ -> 1L))
-                                    .reduceByKey(_ + _)
-                                    .filter(word => !stopWords.contains(word._1))
-                                    .map(_._1).collect()
+    val vocabArray: Array[String] = tokenized
+      .flatMap(_.map(_ -> 1L))
+      .reduceByKey(_ + _)
+      .filter(word => !broadcastStopWords.value.contains(word._1))
+      .map(_._1).collect()
+    println(s"4")
+    broadcastStopWords.unpersist
 
-
-
-
-   val vocab: Map[String, Int] = vocabArray.zipWithIndex.toMap
+    val vocab: Map[String, Int] = vocabArray.zipWithIndex.toMap
+    val broadcastVocab = sc.broadcast(vocab)
+    println(s"5")
 
     // Convert documents into term count vectors
-    val documents: RDD[(Long, Vector)] = tokenized.zipWithIndex.map { case (tokens, id) =>
-    val counts = new scala.collection.mutable.HashMap[Int, Double]()
-    tokens.foreach { term =>
-        if (vocab.contains(term)) {
-          val idx = vocab(term)
-          counts(idx) = counts.getOrElse(idx, 0.0) + 1.0
+    val documents: RDD[(Long, Vector)] = tokenized.zipWithIndex
+      .map { case (tokens, id) => {
+          val counts = new scala.collection.mutable.HashMap[Int, Double]()
+          tokens.foreach { term =>
+              if (broadcastVocab.value.contains(term)) {
+                val idx = broadcastVocab.value(term)
+                counts(idx) = counts.getOrElse(idx, 0.0) + 1.0
+              }
+          }
+          (id, Vectors.sparse(broadcastVocab.value.size, counts.toSeq))
         }
       }
-      (id, Vectors.sparse(vocab.size, counts.toSeq))
-    }
+    println(s"6")
+    broadcastVocab.unpersist
 
     //documents.take(5).foreach(println)
 
@@ -303,11 +313,17 @@ object FeatureConstruction {
     val lda = new LDA().setK(50).setMaxIterations(25)
 
     val ldaModel = lda.run(documents)
+    println(s"7")
 
+    val broadcastVocabArray = sc.broadcast(vocabArray)
     val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 10)
     val topics = topicIndices.map { case (terms, termWeights) =>
-        terms.zip(termWeights).map { case (term, weight) => (vocabArray(term.toInt), weight) }
-      }
+        terms.zip(termWeights).map {
+          case (term, weight) => (broadcastVocabArray.value(term.toInt), weight)
+        }
+    }
+    println(s"8")
+    broadcastVocabArray.unpersist
 
 
     val distLdaModel = ldaModel.asInstanceOf[DistributedLDAModel]
