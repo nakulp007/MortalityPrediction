@@ -23,6 +23,10 @@ project/plugins/project/
 .idea/
 
 data_full/
+<<<<<<< HEAD
 data/
 data1000/
 dataFull/
+=======
+data5000/
+>>>>>>> c53c1288b324c7555742ac614672d9eefa994848
