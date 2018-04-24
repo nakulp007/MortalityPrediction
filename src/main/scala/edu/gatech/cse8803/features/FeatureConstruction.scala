@@ -369,7 +369,7 @@ object FeatureConstruction {
     (finalNoteFeatures)
   }
 
-  def constructComorbiditiesFeatureTuple( comorbidities: RDD[Comorbidities]): RDD[FeatureArrayTuple] = {
+  def constructDerivedFeatures( comorbidities: RDD[Comorbidities]): RDD[FeatureArrayTuple] = {
     
 
     val comorbiditiesUnique = comorbidities
