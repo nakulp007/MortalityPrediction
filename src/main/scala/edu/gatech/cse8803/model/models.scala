@@ -34,4 +34,4 @@ case class Saps2(patientID: String, hadmID: String, icuStayID: String, score: Do
 
 //need to figure out
 //class can not have that many params
-case class Comorbidities(patientID: String, hadmID: String)
+case class Comorbidities(patientID: String, hadmID: String, allValues: String)
