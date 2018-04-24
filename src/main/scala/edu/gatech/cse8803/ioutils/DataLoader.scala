@@ -48,7 +48,7 @@ object DataLoader {
     /*     COMORBIDITIES    */
     //need to figure out
     //class can not have that many params
-    val comorbidities = null //loadComorbiditiesRDD(sqlContext, inputPath, dateFormat)
+    val comorbidities = loadComorbiditiesRDD(sqlContext, inputPath, dateFormat)
     //comorbidities.foreach(println)
     //println(s"Comorbidities count: ${comorbidities.count}")
 
@@ -190,7 +190,52 @@ object DataLoader {
   def loadComorbiditiesRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[Comorbidities] = {
     List(inputPath + "/EHCOMORBIDITIES.csv")
       .foreach(CSVUtils.loadCSVAsTable(sqlContext, _, "EHCOMORBIDITIES"))
-    null
+    
+    sqlContext.sql(
+      """
+        |SELECT subject_id,hadm_id,congestive_heart_failure,cardiac_arrhythmias,valvular_disease,
+        |pulmonary_circulation,peripheral_vascular,hypertension,paralysis,other_neurological,
+        |chronic_pulmonary,diabetes_uncomplicated,diabetes_complicated,hypothyroidism,renal_failure,
+        |liver_disease,peptic_ulcer,aids,lymphoma,metastatic_cancer,solid_tumor,rheumatoid_arthritis,
+        |coagulopathy,obesity,weight_loss,fluid_electrolyte,blood_loss_anemia,deficiency_anemias,
+        |alcohol_abuse,drug_abuse,psychoses,depression
+        |FROM EHCOMORBIDITIES
+      """.stripMargin)
+      .map(r => Comorbidities(
+        r(0).toString,
+        r(1).toString,
+        (if (r(2).toString.isEmpty) "0" else r(2).toString) + 
+        (if (r(3).toString.isEmpty) "0" else r(3).toString) + 
+        (if (r(4).toString.isEmpty) "0" else r(4).toString) + 
+        (if (r(5).toString.isEmpty) "0" else r(5).toString) + 
+        (if (r(6).toString.isEmpty) "0" else r(6).toString)+ 
+        (if (r(7).toString.isEmpty) "0" else r(7).toString)+ 
+        (if (r(8).toString.isEmpty) "0" else r(8).toString)+ 
+        (if (r(9).toString.isEmpty) "0" else r(9).toString)+ 
+        (if (r(10).toString.isEmpty) "0" else r(10).toString) + 
+        (if (r(11).toString.isEmpty) "0" else r(11).toString)+ 
+        (if (r(12).toString.isEmpty) "0" else r(12).toString)+ 
+        (if (r(13).toString.isEmpty) "0" else r(13).toString)+ 
+        (if (r(14).toString.isEmpty) "0" else r(14).toString)+ 
+        (if (r(15).toString.isEmpty) "0" else r(15).toString)+ 
+        (if (r(16).toString.isEmpty) "0" else r(16).toString)+ 
+        (if (r(17).toString.isEmpty) "0" else r(17).toString)+ 
+        (if (r(18).toString.isEmpty) "0" else r(18).toString)+ 
+        (if (r(19).toString.isEmpty) "0" else r(19).toString)+ 
+        (if (r(20).toString.isEmpty) "0" else r(20).toString)+ 
+        (if (r(21).toString.isEmpty) "0" else r(21).toString)+ 
+        (if (r(22).toString.isEmpty) "0" else r(22).toString)+ 
+        (if (r(23).toString.isEmpty) "0" else r(23).toString)+ 
+        (if (r(24).toString.isEmpty) "0" else r(24).toString)+ 
+        (if (r(25).toString.isEmpty) "0" else r(25).toString)+ 
+        (if (r(26).toString.isEmpty) "0" else r(26).toString)+ 
+        (if (r(27).toString.isEmpty) "0" else r(27).toString) + 
+        (if (r(28).toString.isEmpty) "0" else r(28).toString)+ 
+        (if (r(29).toString.isEmpty) "0" else r(29).toString)+ 
+        (if (r(30).toString.isEmpty) "0" else r(30).toString)+ 
+        (if (r(31).toString.isEmpty) "0" else r(31).toString)
+        
+      ))
   }
 
   def loadIcuStayRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[IcuStay] = {
