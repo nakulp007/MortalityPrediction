@@ -68,7 +68,7 @@ object Main {
       patients1, icuStays1, rawNotes, stopwords)
 
     val patientCount = patients.count
-    val useExactSplits = patientCount > 1000
+    val useExactSplits = patientCount <= 1000
     println(s"Patients with first note count: ${patientCount}")
     println(s"IcuStays with first note count: ${icuStays.count}")
     println(s"Notes after filtering: ${notes.count}")
@@ -112,11 +112,13 @@ object Main {
 
     runBaseLineModel(sc, subsampledTrainingPatients, testPatients,
         icuStays, rawSaps2s, firstNoteDates, labels, useCv=false,
-        numIterations=300,
-        regParam=0.1)
+        numIterations=500,
+        regParam=1000)
 
     //runRetrospectiveTopicModel(sc, subsampledTrainingPatients, testPatients,
-    //    notes, stopwords, firstNoteDates, labels)
+    //    notes, stopwords, firstNoteDates, labels, useCv=false,
+    //    numIterations=300,
+    //    regParam=0.1)
 
     sc.stop()
   }
