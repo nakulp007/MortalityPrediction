@@ -365,6 +365,7 @@ object FeatureConstruction {
     val finalNoteFeatures = featuresRdd.map(x => (x._1, x._2.toArray))
 
     println(s"final-RDD type : ${featuresRdd.getClass}")
+    println(s"Number of note features: ${finalNoteFeatures.count}")
 
     (finalNoteFeatures)
   }
