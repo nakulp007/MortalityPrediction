@@ -64,8 +64,6 @@ object FeatureConstruction {
   def constructBaselineFeatureArrayTuples(sc: SparkContext, patients: RDD[Patient],
       icuStays: RDD[IcuStay], saps2s: RDD[Saps2]): RDD[FeatureArrayTuple] = {
 
-
-
     // Join with icuStays for RDD[((patientID, hadmID, icuStayID), Patient)]
     val patientsWithIcu: RDD[((String, String, String), Patient)] = icuStays.keyBy(_.patientID)
       .join(patients.keyBy(_.patientID))
@@ -370,30 +368,32 @@ object FeatureConstruction {
     (finalNoteFeatures)
   }
 
-  def constructDerivedFeatures( comorbidities: RDD[Comorbidities]): RDD[FeatureArrayTuple] = {
-    
+  def constructDerivedFeatures(patients: RDD[Patient], icuStays: RDD[IcuStay],
+      comorbidities: RDD[Comorbidities]): RDD[FeatureArrayTuple] = {
+
+    val patIcu: RDD[((String, String), Int)] = icuStays.keyBy(_.patientID)
+      .join(patients.keyBy(_.patientID))
+      .map{ case(pid, (icu, p)) => ((pid, icu.hadmID), 0) }
+
+    println(s"PatIcu: ${patIcu.count}")
 
     val comorbiditiesUnique = comorbidities
       .map(x => ((x.patientID, x.hadmID), x))
-      .reduceByKey((x, y) => if (x.hadmID.toDouble > y.hadmID.toDouble) x else y)
-      .map(_._2)
-      .map(x => (x.patientID, x))
-      .reduceByKey((x, y) => if (x.hadmID.toDouble > y.hadmID.toDouble) x else y)
-      .map(_._2)
+      .join(patIcu)
+      .map{ case((pid, hadmID), (comorb, z)) => comorb }
 
-      
-      val comorbiditiesFeatures = comorbiditiesUnique.map(x => (x.patientID, Array[Double](x.allValues.charAt(0).toDouble, x.allValues.charAt(1).toDouble, x.allValues.charAt(2).toDouble,
-        x.allValues.charAt(3).toDouble,x.allValues.charAt(4).toDouble,x.allValues.charAt(5).toDouble,x.allValues.charAt(6).toDouble,x.allValues.charAt(7).toDouble,
-        x.allValues.charAt(8).toDouble,x.allValues.charAt(9).toDouble,x.allValues.charAt(10).toDouble,x.allValues.charAt(11).toDouble,x.allValues.charAt(12).toDouble,
-        x.allValues.charAt(13).toDouble,x.allValues.charAt(14).toDouble,x.allValues.charAt(15).toDouble,x.allValues.charAt(16).toDouble,x.allValues.charAt(17).toDouble,
-        x.allValues.charAt(18).toDouble,x.allValues.charAt(19).toDouble,x.allValues.charAt(20).toDouble,x.allValues.charAt(21).toDouble,x.allValues.charAt(22).toDouble,
-        x.allValues.charAt(23).toDouble,x.allValues.charAt(24).toDouble,x.allValues.charAt(25).toDouble,x.allValues.charAt(26).toDouble,x.allValues.charAt(27).toDouble,
-       x.allValues.charAt(28).toDouble,x.allValues.charAt(29).toDouble)))
+    println(s"Comorb: ${comorbiditiesUnique.count}")
+
+    val comorbiditiesFeatures = comorbiditiesUnique.map(x => (x.patientID, Array[Double](x.allValues.charAt(0).toDouble, x.allValues.charAt(1).toDouble, x.allValues.charAt(2).toDouble,
+      x.allValues.charAt(3).toDouble,x.allValues.charAt(4).toDouble,x.allValues.charAt(5).toDouble,x.allValues.charAt(6).toDouble,x.allValues.charAt(7).toDouble,
+      x.allValues.charAt(8).toDouble,x.allValues.charAt(9).toDouble,x.allValues.charAt(10).toDouble,x.allValues.charAt(11).toDouble,x.allValues.charAt(12).toDouble,
+      x.allValues.charAt(13).toDouble,x.allValues.charAt(14).toDouble,x.allValues.charAt(15).toDouble,x.allValues.charAt(16).toDouble,x.allValues.charAt(17).toDouble,
+      x.allValues.charAt(18).toDouble,x.allValues.charAt(19).toDouble,x.allValues.charAt(20).toDouble,x.allValues.charAt(21).toDouble,x.allValues.charAt(22).toDouble,
+      x.allValues.charAt(23).toDouble,x.allValues.charAt(24).toDouble,x.allValues.charAt(25).toDouble,x.allValues.charAt(26).toDouble,x.allValues.charAt(27).toDouble,
+      x.allValues.charAt(28).toDouble,x.allValues.charAt(29).toDouble)))
 
 
-      comorbiditiesFeatures
-
-
+    comorbiditiesFeatures
   }
 
   def filterSpecialCharacters(document: String) = {

@@ -68,7 +68,7 @@ object Main {
       patients1, icuStays1, rawNotes, stopwords)
 
     val patientCount = patients.count
-    val useExactSplits = patientCount <= 3000
+    val useExactSplits = patientCount <= 2000
     println(s"Patients with first note count: ${patientCount}")
     println(s"IcuStays with first note count: ${icuStays.count}")
     println(s"Notes after filtering: ${notes.count}")
@@ -110,15 +110,22 @@ object Main {
       trainPatients, labels, useExactSplits)
     println(s"${subsampledTrainingPatients.count} subsampled training patients")
 
-    runBaseLineModel(sc, subsampledTrainingPatients, testPatients,
-        icuStays, rawSaps2s, firstNoteDates, labels, useCv=false,
-        numIterations=400,
-        regParam=1)
+    //runBaseLineModel(sc, subsampledTrainingPatients, testPatients,
+    //    icuStays, rawSaps2s, firstNoteDates, labels, useCv=false,
+    //    numIterations=400,
+    //    regParam=0.1)
 
     //runRetrospectiveTopicModel(sc, subsampledTrainingPatients, testPatients,
-    //    notes, stopwords, firstNoteDates, labels, useCv=false,
+    //    notes, stopwords, labels, useCv=false,
     //    numIterations=300,
     //    regParam=0.1)
+
+    runRetrospectiveDerivedFeatureModel(sc,
+        trainPatients, testPatients, labels,
+        icuStays, rawSaps2s, rawComorbidities,
+        useCv=false,
+        numIterations=300,
+        regParam=50)
 
     sc.stop()
   }
@@ -271,7 +278,7 @@ object Main {
     svm.setIntercept(bestInterceptCond)
 
     val svmModel = svm.run(trainingPoints)
-    //svmModel.clearThreshold // Clears threshold so predict() outputs raw prediction scores.
+    svmModel.clearThreshold // Clears threshold so predict() outputs raw prediction scores.
 
     println("B----------- Test with time varying testing set --------------")
     // Evaluate the trained model with the training set
@@ -298,7 +305,7 @@ object Main {
         .map(point => (svmModel.predict(point.features), point.label))
 
       var (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(testPreds)
-      println(s"${hr},${total},${numPositives},${auc},${accuracy},${sensitivity},${specificity}")
+      println(s"${hr},${total},${numPositives},${auc}")
       hr += 12
     }
     println("B---------------- Baseline model test completed -------------------")
@@ -346,8 +353,7 @@ object Main {
 
   def runRetrospectiveTopicModel(sc: SparkContext,
       trainPatients: RDD[Patient], testPatients: RDD[Patient],
-      notes: RDD[Note], stopWords: Set[String],
-      firstNoteDates: RDD[FirstNoteInfo], labels: RDD[LabelTuple],
+      notes: RDD[Note], stopWords: Set[String], labels: RDD[LabelTuple],
       useCv: Boolean=true, numFolds: Int=5,
       interceptCond: Boolean=true, numIterations: Int=300, regParam: Double=0.1) = {
     println("RTM--------------- Begin retrospective topic model ----------------")
@@ -484,4 +490,143 @@ object Main {
   def createContext(appName: String): SparkContext = createContext(appName, "local")
 
   def createContext: SparkContext = createContext("CSE 8803 Homework Two Application", "local")
+
+  def runRetrospectiveDerivedFeatureModel(sc: SparkContext,
+      trainPatients: RDD[Patient], testPatients: RDD[Patient], labels: RDD[LabelTuple],
+      icuStays: RDD[IcuStay], saps2s: RDD[Saps2], comorbidities: RDD[Comorbidities],
+      useCv: Boolean=true, numFolds: Int=5,
+      interceptCond: Boolean=true, numIterations: Int=300, regParam: Double=0.1) = {
+    println("--------------- Begin retrospective derived feature model ----------------")
+    val baselineFeatureArrayTuples = constructBaselineFeatureArrayTuples(
+      sc, trainPatients, icuStays, saps2s)
+    val comorbFeatureArrayTuples = constructDerivedFeatures(trainPatients, icuStays, comorbidities)
+    val combinedFeatureArrayTuples = baselineFeatureArrayTuples
+      .join(comorbFeatureArrayTuples)
+      .map{ case(pid, (carr, barr)) => (pid, carr ++ barr) }
+
+    println(s"combinedFeatureArrayTuples count: ${combinedFeatureArrayTuples.count}")
+    combinedFeatureArrayTuples.take(10).foreach(x => println(s"${x._2.size}--${x._2.mkString(" ")}"))
+
+    var bestInterceptCond = interceptCond
+    var bestNumIterations = numIterations
+    var bestRegParam = regParam
+
+    if (useCv) {
+      /************************* Create model ************************/
+      // Split into folds
+      val splitProportions = new Array[Double](numFolds)
+      for (i <- 0 to (numFolds - 1)) splitProportions(i) = 1.0 / numFolds
+      val splits = trainPatients.randomSplit(splitProportions)
+
+      val arrayCvTrainPoints = new Array[RDD[LabeledPoint]](numFolds)
+      val arrayCvTestPoints = new Array[RDD[LabeledPoint]](numFolds)
+      for (i <- 0 to (numFolds - 1)) {
+        val cvTrainTuples = trainPatients.subtract(splits(i))
+          .keyBy(_.patientID)
+          .join(combinedFeatureArrayTuples)
+          .map{ case(pid, (p, arr)) => (pid, arr) }
+        arrayCvTrainPoints(i) = constructForSVM(cvTrainTuples, labels)
+
+        val cvTestTuples = splits(i)
+          .keyBy(_.patientID)
+          .join(combinedFeatureArrayTuples)
+          .map{ case(pid, (p, arr)) => (pid, arr) }
+        arrayCvTestPoints(i) = constructForSVM(cvTestTuples, labels)
+      }
+
+      println("------- Run cross validation for training model --------")
+      /************ Cross validate for the best hyper parameters ***********/
+      val interceptConds: List[Boolean] = List(false, true) // false is default
+      val numIterationsParams: List[Int] = List(200, 300, 400) // 100 is default
+      val regParams: List[Double] = List(0.1, 1, 10, 100) // 0.0 is default
+
+      var maxAUC = 0.0
+      bestInterceptCond = false
+      bestNumIterations = 200
+      bestRegParam = 0.1
+
+      var sumAUC = 0.0
+      for (interceptCond <- interceptConds) {
+        for (numIterations <- numIterationsParams) {
+          for (regParam <- regParams) {
+            val svm = new SVMWithSGD()
+            svm.optimizer
+              .setNumIterations(numIterations)
+              .setRegParam(regParam)
+            svm.setIntercept(interceptCond)
+
+            sumAUC = 0.0
+            for (i <- 0 to (numFolds - 1)) {
+              arrayCvTrainPoints(i).cache
+              val svmModel = svm.run(arrayCvTrainPoints(i))
+              svmModel.clearThreshold
+
+              val preds = arrayCvTestPoints(i)
+                .map(point => (svmModel.predict(point.features), point.label))
+              val metrics = new BinaryClassificationMetrics(preds)
+              sumAUC += metrics.areaUnderROC
+            }
+            val auc = sumAUC / numFolds // get average AUC
+            println(s"${interceptCond},${numIterations},${regParam},${auc}")
+            if (auc > maxAUC) {
+              maxAUC = auc
+              bestInterceptCond = interceptCond
+              bestNumIterations = numIterations
+              bestRegParam = regParam
+            }
+          }
+        }
+      }
+    }
+    println(s"Best interceptCond: ${bestInterceptCond}")
+    println(s"Best numIterations: ${bestNumIterations}")
+    println(s"Best regParam: ${bestRegParam}")
+
+    // Use the best parameters to construct a model for the whole training set
+    val trainingPoints = constructForSVM(combinedFeatureArrayTuples, labels)
+    trainingPoints.cache
+
+    // Count number of training instances and positive ones among them
+    val (numTraining, numTrainingPositive) = trainingPoints
+      .aggregate((0, 0))(
+        (u, point) => (u._1+1, u._2+point.label.toInt),
+        (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
+      )
+    println(s"Number of training instances: ${numTraining}")
+    println(s"Number of positive in train: ${numTrainingPositive}")
+
+    val svm = new SVMWithSGD()
+    svm.optimizer
+      .setNumIterations(bestNumIterations)
+      .setRegParam(bestRegParam)
+    svm.setIntercept(bestInterceptCond)
+
+    val svmModel = svm.run(trainingPoints)
+    svmModel.clearThreshold // Clears threshold so predict() outputs raw prediction scores.
+
+    // Evaluate the trained model with the training set
+    val trainPreds = trainingPoints
+      .map(point => (svmModel.predict(point.features), point.label))
+    val trainMetrics = new BinaryClassificationMetrics(trainPreds)
+    val trainAUC = trainMetrics.areaUnderROC
+    println(s"Final training AUC: ${trainAUC}")
+
+
+    val testBaselineFeatureArrayTuples = constructBaselineFeatureArrayTuples(
+      sc, testPatients, icuStays, saps2s)
+    val testComorbFeatureArrayTuples = constructDerivedFeatures(testPatients, icuStays, comorbidities)
+    val testCombinedFeatureArrayTuples = testBaselineFeatureArrayTuples
+      .join(testComorbFeatureArrayTuples)
+      .map{ case(pid, (carr, barr)) => (pid, carr ++ barr) }
+
+    val testingPoints = constructForSVM(testCombinedFeatureArrayTuples, labels)
+    val testPreds = testingPoints
+      .map(point => (svmModel.predict(point.features), point.label))
+
+    val (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(testPreds)
+    println(s"Retrospective Topic Model test AUC: ${auc}")
+    println("${total},${numPositives},${auc}")
+    println(s"${total},${numPositives},${auc}")
+    println("---------------- Retrospective derived feature model completed -------------------")
+  }
 }
