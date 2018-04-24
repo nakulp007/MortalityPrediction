@@ -278,7 +278,7 @@ object FeatureConstruction {
     (filteredPatients, filteredIcuStays)
   }
 
-  def retrospectiveTopicModel(notes: RDD[Note], stopWords : Set[String]) : RDD[FeatureArrayTuple] = {
+  def retrospectiveTopicModel(notes: RDD[Note], stopWords: Set[String], numIterations: Int=200, k: Int=50) : RDD[FeatureArrayTuple] = {
     val sc = notes.context
 
     val filteredNotes  = notes.map(x => (x.patientID, filterSpecialCharacters(x.text)))
@@ -290,7 +290,7 @@ object FeatureConstruction {
     //val patientsDocsMap = filteredNotes.map(x => x._1).collect().zipWithIndex.toMap
     //patientsDocsMap.take(5).foreach(println)
 
-    val patientsDocsMapSwap = filteredNotes.map(x => x._1)
+    val docPatientMap = filteredNotes.map(x => x._1)
       .zipWithIndex
       .map(x => (x._2, x._1))
       .collectAsMap
@@ -312,6 +312,7 @@ object FeatureConstruction {
     broadcastStopWords.unpersist
 
     val vocab: Map[String, Int] = vocabArray.zipWithIndex.toMap
+    val vocabSize = vocab.size
     val broadcastVocab = sc.broadcast(vocab)
 
     // Convert documents into term count vectors
@@ -332,7 +333,11 @@ object FeatureConstruction {
     //documents.take(5).foreach(println)
 
     // run LDA model
-    val lda = new LDA().setK(50).setMaxIterations(25)
+    val lda = new LDA()
+      .setK(k)
+      .setMaxIterations(numIterations)
+      .setBeta(200.0 / vocabSize + 1) // Following Ghassemi, but +1 is per library's recommendation
+      //.setAlpha(50.0 / k) // Ghassemi uses this, but library recommends the default = (50/k)+1
 
     val ldaModel = lda.run(documents)
 
@@ -353,8 +358,9 @@ object FeatureConstruction {
 
     println(s"topics-Type: ${topTopicsForDoc.getClass}")
 
-    val featuresRdd = topTopicsForDoc.map(row => (patientsDocsMapSwap(row._1.toInt), row._2))
-    //featuresRdd.take(5).foreach(println)
+    val broadcastDocPatientMap = sc.broadcast(docPatientMap)
+    val featuresRdd = topTopicsForDoc.map(row => (broadcastDocPatientMap.value(row._1.toInt), row._2))
+    broadcastDocPatientMap.unpersist
 
     val finalNoteFeatures = featuresRdd.map(x => (x._1, x._2.toArray))
 
