@@ -384,13 +384,13 @@ object FeatureConstruction {
 
     println(s"Comorb: ${comorbiditiesUnique.count}")
 
-    val comorbiditiesFeatures = comorbiditiesUnique.map(x => (x.patientID, Array[Double](x.allValues.charAt(0).toDouble, x.allValues.charAt(1).toDouble, x.allValues.charAt(2).toDouble,
-      x.allValues.charAt(3).toDouble,x.allValues.charAt(4).toDouble,x.allValues.charAt(5).toDouble,x.allValues.charAt(6).toDouble,x.allValues.charAt(7).toDouble,
-      x.allValues.charAt(8).toDouble,x.allValues.charAt(9).toDouble,x.allValues.charAt(10).toDouble,x.allValues.charAt(11).toDouble,x.allValues.charAt(12).toDouble,
-      x.allValues.charAt(13).toDouble,x.allValues.charAt(14).toDouble,x.allValues.charAt(15).toDouble,x.allValues.charAt(16).toDouble,x.allValues.charAt(17).toDouble,
-      x.allValues.charAt(18).toDouble,x.allValues.charAt(19).toDouble,x.allValues.charAt(20).toDouble,x.allValues.charAt(21).toDouble,x.allValues.charAt(22).toDouble,
-      x.allValues.charAt(23).toDouble,x.allValues.charAt(24).toDouble,x.allValues.charAt(25).toDouble,x.allValues.charAt(26).toDouble,x.allValues.charAt(27).toDouble,
-      x.allValues.charAt(28).toDouble,x.allValues.charAt(29).toDouble)))
+    val comorbiditiesFeatures = comorbiditiesUnique.map(x => (x.patientID, Array[Double]((x.allValues.charAt(0)-48).toDouble, (x.allValues.charAt(1)-48).toDouble, (x.allValues.charAt(2)-48).toDouble,
+      (x.allValues.charAt(3)-48).toDouble,(x.allValues.charAt(4)-48).toDouble,(x.allValues.charAt(5)-48).toDouble,(x.allValues.charAt(6)-48).toDouble,(x.allValues.charAt(7)-48).toDouble,
+      (x.allValues.charAt(8)-48).toDouble,(x.allValues.charAt(9)-48).toDouble,(x.allValues.charAt(10)-48).toDouble,(x.allValues.charAt(11)-48).toDouble,(x.allValues.charAt(12)-48).toDouble,
+      (x.allValues.charAt(13)-48).toDouble,(x.allValues.charAt(14)-48).toDouble,(x.allValues.charAt(15)-48).toDouble,(x.allValues.charAt(16)-48).toDouble,(x.allValues.charAt(17)-48).toDouble,
+      (x.allValues.charAt(18)-48).toDouble,(x.allValues.charAt(19)-48).toDouble,(x.allValues.charAt(20)-48).toDouble,(x.allValues.charAt(21)-48).toDouble,(x.allValues.charAt(22)-48).toDouble,
+      (x.allValues.charAt(23)-48).toDouble,(x.allValues.charAt(24)-48).toDouble,(x.allValues.charAt(25)-48).toDouble,(x.allValues.charAt(26)-48).toDouble,(x.allValues.charAt(27)-48).toDouble,
+      (x.allValues.charAt(28)-48).toDouble,(x.allValues.charAt(29)-48).toDouble)))
 
 
     comorbiditiesFeatures
