@@ -3,6 +3,9 @@ package edu.gatech.cse8803.features
 import java.sql.Date
 
 import edu.gatech.cse8803.model._
+
+import breeze.linalg.{DenseVector}
+
 import org.apache.spark.SparkContext
 import org.apache.spark.mllib.clustering.{DistributedLDAModel, LDA}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
@@ -136,7 +139,26 @@ object FeatureConstruction {
     (joined.map(x => x._2._1._1), joined.map(x => x._2._1._2))
   }
 
-  /* Filter for patients and icuStays remaining in ICU x hours after their first note */
+  def filterDataOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay], notes: RDD[Note],
+      firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay], RDD[Note]) = {
+    if (hours <= 0) return (patients, icuStays, notes)
+
+    val (fPats, fIcus) = filterDataOnHoursSinceFirstNote(patients, icuStays, firstNoteDates, hours)
+
+    val MILLISECONDS_IN_HOUR = 60L * 60 * 1000
+    val offsetInMilliseconds = MILLISECONDS_IN_HOUR*hours
+
+    val filteredNotes = firstNoteDates.join(notes.keyBy(_.patientID))
+      .filter{ case(pid, (date, note)) => {
+          val bound = date.getTime + offsetInMilliseconds
+          note.chartDate.getTime < bound
+        }
+      }
+      .map{ case(pid, (date, note)) => note }
+
+    (fPats, fIcus, filteredNotes)
+  }
+
   def filterAllOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay], notes: RDD[Note],
       firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay], RDD[Note]) = {
     if (hours <= 0) return (patients, icuStays, notes)
@@ -167,25 +189,23 @@ object FeatureConstruction {
     (filteredPatients, filteredIcuStays, filteredNotes)
   }
 
-  /* Filter for patients and icuStays remaining in ICU x hours after their first note */
-  def filterDataOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay], notes: RDD[Note],
-      firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay], RDD[Note]) = {
-    if (hours <= 0) return (patients, icuStays, notes)
-
-    val (fPats, fIcus) = filterDataOnHoursSinceFirstNote(patients, icuStays, firstNoteDates, hours)
+  def filterTokenizedNotesOnHoursSinceFirstNote(tokenizedNotes: RDD[TokenizedNote],
+      firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[TokenizedNote]) = {
+    if (hours <= 0) return (tokenizedNotes)
 
     val MILLISECONDS_IN_HOUR = 60L * 60 * 1000
     val offsetInMilliseconds = MILLISECONDS_IN_HOUR*hours
 
-    val filteredNotes = firstNoteDates.join(notes.keyBy(_.patientID))
-      .filter{ case(pid, (date, note)) => {
+    val filteredNotes = tokenizedNotes.keyBy(_.patientID)
+      .join(firstNoteDates)
+      .filter{ case(pid, (tnote, date)) =>  {
           val bound = date.getTime + offsetInMilliseconds
-          note.chartDate.getTime <= bound
+          (tnote.chartDate.getTime < bound)
         }
       }
-      .map{ case(pid, (date, note)) => note }
+      .map{ case(pid, (tnote, date)) => tnote }
 
-    (fPats, fIcus, filteredNotes)
+    (filteredNotes)
   }
 
   /**
@@ -233,43 +253,49 @@ object FeatureConstruction {
   */
   def processNotesAndCalculateStartDates(patients: RDD[Patient], icuStays: RDD[IcuStay],
       notes: RDD[Note], stopwords: Set[String]):
-      (RDD[Patient], RDD[IcuStay], RDD[Note], RDD[FirstNoteInfo]) = {
+      (RDD[Patient], RDD[IcuStay], RDD[Note], RDD[FirstNoteInfo], RDD[TokenizedNote]) = {
     val sc = patients.context
 
-    val patIcu: RDD[((String, String), IcuStay)] = icuStays.keyBy(_.patientID)
+    val patIcu: RDD[((String, String), (Patient, IcuStay))] = icuStays.keyBy(_.patientID)
       .join(patients.keyBy(_.patientID))
-      .map{ case(pid, (icu, p)) => ((pid, icu.hadmID), icu) }
+      .map{ case(pid, (icu, p)) => ((pid, icu.hadmID), (p, icu)) }
 
     // Filter for notes that are within the inDate and outDate of IcuStays
     // This also automatically filters out patients without HADM_ID even if
     // they are not during data loading.
     val notesInIcu: RDD[(String, Note)] = patIcu
       .join(notes.keyBy(x => (x.patientID, x.hadmID)))
-      .filter{ case((pid, hadmID), (icu, note)) => {
+      .filter{ case((pid, hadmID), ((p, icu), note)) => {
           val noteTime = note.chartDate.getTime
           (icu.inDate.getTime <= noteTime
-              && noteTime < icu.outDate.getTime)
+              && noteTime < icu.outDate.getTime
+              && noteTime < p.dod.getTime)
         }
       }
-      .map{ case((pid, hadmID), (icu, note)) => (pid, note) }
+      .map{ case((pid, hadmID), ((p, icu), note)) => (pid, note) }
 
     println(s"notesInIcu count: ${notesInIcu.count}")
 
     // Count the number of non-stopwords for each patient
     // Then filter for those who have at least 100 words
     val broadcastStopwords = sc.broadcast(stopwords)
-    val filteredPatientWordCounts = notesInIcu
+    val tokenizedNoteContent = notesInIcu
       .map{ case(pid, note) => {
-        val count = filterSpecialCharacters(note.text)
-          .toLowerCase
-          .split("\\s")
-          .filter(_.length > 3)
-          .filter(_.forall(java.lang.Character.isLetter))
-          .filter(!broadcastStopwords.value.contains(_))
-          .size
-        (pid, count)
+          TokenizedNote(
+            pid,
+            note.hadmID,
+            note.chartDate,
+            filterSpecialCharacters(note.text)
+              .toLowerCase
+              .split("\\s")
+              .filter(_.length > 3)
+              .filter(_.forall(java.lang.Character.isLetter))
+              .filter(!broadcastStopwords.value.contains(_))
+          )
         }
       }
+    val filteredPatientWordCounts = tokenizedNoteContent
+      .map(tnote => (tnote.patientID, tnote.tokens.size))
       .reduceByKey(_ + _)
       .filter(_._2 >= 100)
 
@@ -292,7 +318,7 @@ object FeatureConstruction {
       .join(icuStays.keyBy(_.patientID))
       .map{ case(pid, (date, icu)) => icu }
 
-    (adjustedPatients, adjustedIcuStays, adjustedNotes, firstNoteDates)
+    (adjustedPatients, adjustedIcuStays, adjustedNotes, firstNoteDates, tokenizedNoteContent)
   }
 
   // Using the fact that firstNoteDates only have patietnIDs with a first note.
@@ -307,38 +333,23 @@ object FeatureConstruction {
     (filteredPatients, filteredIcuStays)
   }
 
-  def retrospectiveTopicModel(notes: RDD[Note], stopWords: Set[String], numIterations: Int=200, k: Int=50) : RDD[FeatureArrayTuple] = {
-    val sc = notes.context
+  // Assumes the notes have their stopwords removed!
+  def retrospectiveTopicModel(tokenizedNotes: RDD[TokenizedNote], numIterations: Int=50, k: Int=50) : RDD[FeatureArrayTuple] = {
+    val sc = tokenizedNotes.context
 
-    val filteredNotes  = notes.map(x => (x.patientID, filterSpecialCharacters(x.text)))
-      .reduceByKey((x, y) => x + " " + y)
-
-    println(s"Filtered notes count: ${filteredNotes.count}")
-
-    // create index map for patients
-    //val patientsDocsMap = filteredNotes.map(x => x._1).collect().zipWithIndex.toMap
-    //patientsDocsMap.take(5).foreach(println)
-
-    val docPatientMap = filteredNotes.map(x => x._1)
+    val docPatientMap = tokenizedNotes.map(x => x.patientID)
       .zipWithIndex
       .map(x => (x._2, x._1))
       .collectAsMap
 
-    // create corpus from entire text
-    val corpus: RDD[String] = filteredNotes.map(x => x._2)
-
     //  tokenize word counts
-    val tokenized: RDD[Seq[String]] = corpus.map(_.toLowerCase.split("\\s"))
-      .map(_.filter(_.length > 3).filter(_.forall(java.lang.Character.isLetter)))
+    val tokenized: RDD[Seq[String]] = tokenizedNotes.map(_.tokens)
 
-    val broadcastStopWords = sc.broadcast(stopWords)
-    // create vocabularay and remove stop words as well
+    // create vocabularay
     val vocabArray: Array[String] = tokenized
       .flatMap(_.map(_ -> 1L))
       .reduceByKey(_ + _)
-      .filter(word => !broadcastStopWords.value.contains(word._1))
       .map(_._1).collect()
-    broadcastStopWords.unpersist
 
     val vocab: Map[String, Int] = vocabArray.zipWithIndex.toMap
     val vocabSize = vocab.size
@@ -359,19 +370,17 @@ object FeatureConstruction {
       }
     broadcastVocab.unpersist
 
-    //documents.take(5).foreach(println)
-
     // run LDA model
     val lda = new LDA()
       .setK(k)
       .setMaxIterations(numIterations)
-      .setBeta(200.0 / vocabSize + 1) // Following Ghassemi, but +1 is per library's recommendation
+      //.setBeta(200.0 / vocabSize + 1) // Following Ghassemi, but +1 is per library's recommendation
       //.setAlpha(50.0 / k) // Ghassemi uses this, but library recommends the default = (50/k)+1
 
     val ldaModel = lda.run(documents)
 
     val broadcastVocabArray = sc.broadcast(vocabArray)
-    val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 10)
+    val topicIndices = ldaModel.describeTopics(maxTermsPerTopic=10)
     val topics = topicIndices.map { case (terms, termWeights) =>
         terms.zip(termWeights).map {
           case (term, weight) => (broadcastVocabArray.value(term.toInt), weight)
@@ -379,22 +388,23 @@ object FeatureConstruction {
     }
     broadcastVocabArray.unpersist
 
-    val distLdaModel = ldaModel.asInstanceOf[DistributedLDAModel]
-    val topTopicsForDoc = distLdaModel.topicDistributions
-    //topTopicsForDoc.take(5).foreach(println)
+    //val distLdaModel = ldaModel.asInstanceOf[DistributedLDAModel]
+    val topTopicsForDoc = ldaModel.topicDistributions
 
-    println(s"documents-Count: ${topTopicsForDoc.count}")
-
-    println(s"topics-Type: ${topTopicsForDoc.getClass}")
+    //println(s"documents-Count: ${topTopicsForDoc.count}")
+    //println(s"topics-Type: ${topTopicsForDoc.getClass}")
 
     val broadcastDocPatientMap = sc.broadcast(docPatientMap)
-    val featuresRdd = topTopicsForDoc.map(row => (broadcastDocPatientMap.value(row._1.toInt), row._2))
+    val intermediateRdd: RDD[(String, (Int, DenseVector[Double]))] = topTopicsForDoc.map(
+      row => (broadcastDocPatientMap.value(row._1.toInt), (1, new DenseVector(row._2.toArray))))
     broadcastDocPatientMap.unpersist
 
-    val finalNoteFeatures = featuresRdd.map(x => (x._1, x._2.toArray))
+    val finalNoteFeatures = intermediateRdd
+      .reduceByKey((v1, v2) => (v1._1+v2._1, v1._2+v2._2))
+      .map{ case(pid, (docCount, sumVector)) => (pid, (sumVector * (1.0 / docCount)).toArray)}
 
-    println(s"final-RDD type : ${featuresRdd.getClass}")
-    println(s"Number of note features: ${finalNoteFeatures.count}")
+    //println(s"final-RDD type : ${featuresRdd.getClass}")
+    //println(s"Number of note features: ${finalNoteFeatures.count}")
 
     (finalNoteFeatures)
   }

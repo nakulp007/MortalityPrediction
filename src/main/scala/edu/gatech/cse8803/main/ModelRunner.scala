@@ -21,7 +21,7 @@ object ModelRunner {
   def runBaseLineModel(sc: SparkContext, trainPatients: RDD[Patient], testPatients: RDD[Patient],
       icuStays: RDD[IcuStay], saps2s: RDD[Saps2], firstNoteDates: RDD[FirstNoteInfo],
       labels: RDD[LabelTuple],
-      useCv: Boolean=true, numFolds: Int=5,
+      useCv: Boolean=false, numFolds: Int=5,
       interceptCond: Boolean=true, numIterations: Int=300, regParam: Double=100.0) = {
     println("B---------------- Begin baseline model ------------------------")
     var bestInterceptCond = interceptCond
@@ -165,8 +165,6 @@ object ModelRunner {
       (u1, u2) => (u1._1+u2._1, u1._2+u2._2, u1._3+u2._3, u1._4+u2._4)
     )
 
-    println(s"${tp},${fp},${tn},${fn}")
-
     val binMetrics = new BinaryClassificationMetrics(predLabels)
     val auc = binMetrics.areaUnderROC
 
@@ -181,11 +179,10 @@ object ModelRunner {
     (total, numPositives, auc, accuracy, sensitivity, specificity)
   }
 
-  def runTimeVaryingTopicModel(sc: SparkContext,
-      trainPatients: RDD[Patient], testPatients: RDD[Patient],
+  def runTimeVaryingTopicModel(sc: SparkContext, trainPatients: RDD[Patient], testPatients: RDD[Patient],
       labels: RDD[LabelTuple],
       icuStays: RDD[IcuStay], firstNoteDates: RDD[FirstNoteInfo],
-      notes: RDD[Note], stopWords: Set[String],
+      tokenizedNotes: RDD[TokenizedNote],
       interceptCond: Boolean=true, numIterations: Int=300, regParam: Double=100.0) = {
     println("B---------------- Begin time varying topic model ------------------------")
     var bestInterceptCond = interceptCond
@@ -198,14 +195,20 @@ object ModelRunner {
     println(s"Chosen regParam: ${bestRegParam}")
 
     println("${hr},${total},${numPositives},${auc},${accuracy},${sensitivity},${specificity}")
+    val filteredTrainNotes = tokenizedNotes.keyBy(_.patientID)
+      .join(trainPatients.keyBy(_.patientID))
+      .map{ case(pid, (tnote, p)) => tnote }
+    val filteredTestNotes = tokenizedNotes.keyBy(_.patientID)
+      .join(testPatients.keyBy(_.patientID))
+      .map{ case(pid, (tnote, p)) => tnote }
     // Test the model across time with the test data
     var go = true
     var hr = 12
     val maxH = 240
     while (hr <= maxH && go) {
-      val (filteredTrainPatients, filteredTrainIcuStays, filteredTrainNotes) = filterAllOnHoursSinceFirstNote(
-          trainPatients, icuStays, notes, firstNoteDates, hr)
-      val trainTuples = retrospectiveTopicModel(filteredTrainNotes, stopWords)
+      val currentTrainNotes = filterTokenizedNotesOnHoursSinceFirstNote(
+          filteredTrainNotes, firstNoteDates, hr)
+      val trainTuples = retrospectiveTopicModel(currentTrainNotes)
       val trainingPoints = constructForSVM(trainTuples, labels)
       trainingPoints.cache
 
@@ -224,10 +227,9 @@ object ModelRunner {
         .map(point => (svmModel.predict(point.features), point.label))
       var (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(trainPreds)
 
-
-      val (filteredTestPatients, filteredTestIcuStays, filteredTestNotes) = filterAllOnHoursSinceFirstNote(
-          testPatients, icuStays, notes, firstNoteDates, hr)
-      val testTuples = retrospectiveTopicModel(filteredTestNotes, stopWords)
+      val currentTestNotes = filterTokenizedNotesOnHoursSinceFirstNote(
+          filteredTestNotes, firstNoteDates, hr)
+      val testTuples = retrospectiveTopicModel(currentTestNotes)
       val testingPoints = constructForSVM(testTuples, labels)
       // Make predictions using the SVM Model
       val testPreds = testingPoints
@@ -243,105 +245,30 @@ object ModelRunner {
 
   def runRetrospectiveTopicModel(sc: SparkContext,
       trainPatients: RDD[Patient], testPatients: RDD[Patient],
-      notes: RDD[Note], stopWords: Set[String], labels: RDD[LabelTuple],
-      useCv: Boolean=true, numFolds: Int=5,
+      tokenizedNotes: RDD[TokenizedNote], labels: RDD[LabelTuple],
       interceptCond: Boolean=true, numIterations: Int=300, regParam: Double=100.0) = {
     println("RTM--------------- Begin retrospective topic model ----------------")
-
-    val noteFeatures = retrospectiveTopicModel(notes, stopWords)
-    println(s"note features count: ${noteFeatures.count}")
 
     var bestInterceptCond = interceptCond
     var bestNumIterations = numIterations
     var bestRegParam = regParam
 
-    if (useCv) {
-      /************************* Create model ************************/
-      // Split into folds
-      val splitProportions = new Array[Double](numFolds)
-      for (i <- 0 to (numFolds - 1)) splitProportions(i) = 1.0 / numFolds
-      val splits = trainPatients.randomSplit(splitProportions)
+    println(s"Chosen interceptCond: ${bestInterceptCond}")
+    println(s"Chosen numIterations: ${bestNumIterations}")
+    println(s"Chosen regParam: ${bestRegParam}")
 
-      val arrayCvTrainPoints = new Array[RDD[LabeledPoint]](numFolds)
-      val arrayCvTestPoints = new Array[RDD[LabeledPoint]](numFolds)
-      for (i <- 0 to (numFolds - 1)) {
-        val cvTrainTuples = trainPatients.subtract(splits(i))
-          .keyBy(_.patientID)
-          .join(noteFeatures)
-          .map{ case(pid, (p, arr)) => (pid, arr) }
-        arrayCvTrainPoints(i) = constructForSVM(cvTrainTuples, labels)
+    val filteredTrainNotes = tokenizedNotes.keyBy(_.patientID)
+      .join(trainPatients.keyBy(_.patientID))
+      .map{ case(pid, (tnote, p)) => tnote }
+    val filteredTestNotes = tokenizedNotes.keyBy(_.patientID)
+      .join(testPatients.keyBy(_.patientID))
+      .map{ case(pid, (tnote, p)) => tnote }
 
-        val cvTestTuples = splits(i)
-          .keyBy(_.patientID)
-          .join(noteFeatures)
-          .map{ case(pid, (p, arr)) => (pid, arr) }
-        arrayCvTestPoints(i) = constructForSVM(cvTestTuples, labels)
-      }
+    val trainNoteFeatures = retrospectiveTopicModel(filteredTrainNotes)
+    println(s"Train note features count: ${trainNoteFeatures.count}")
 
-      println("RTM------- Run cross validation for training model --------")
-      /************ Cross validate for the best hyper parameters ***********/
-      val interceptConds: List[Boolean] = List(false, true) // false is default
-      val numIterationsParams: List[Int] = List(200, 300, 400) // 100 is default
-      val regParams: List[Double] = List(0.1, 1, 10, 100) // 0.0 is default
-
-      var maxAUC = 0.0
-      bestInterceptCond = false
-      bestNumIterations = 200
-      bestRegParam = 0.1
-
-      var sumAUC = 0.0
-      for (interceptCond <- interceptConds) {
-        for (numIterations <- numIterationsParams) {
-          for (regParam <- regParams) {
-            val svm = new SVMWithSGD()
-            svm.optimizer
-              .setNumIterations(numIterations)
-              .setRegParam(regParam)
-            svm.setIntercept(interceptCond)
-
-            sumAUC = 0.0
-            for (i <- 0 to (numFolds - 1)) {
-              arrayCvTrainPoints(i).cache
-              val svmModel = svm.run(arrayCvTrainPoints(i))
-              svmModel.clearThreshold
-
-              val preds = arrayCvTestPoints(i)
-                .map(point => (svmModel.predict(point.features), point.label))
-              val metrics = new BinaryClassificationMetrics(preds)
-              sumAUC += metrics.areaUnderROC
-            }
-            val auc = sumAUC / numFolds // get average AUC
-            println(s"${interceptCond},${numIterations},${regParam},${auc}")
-            if (auc > maxAUC) {
-              maxAUC = auc
-              bestInterceptCond = interceptCond
-              bestNumIterations = numIterations
-              bestRegParam = regParam
-            }
-          }
-        }
-      }
-    }
-    println(s"Best interceptCond: ${bestInterceptCond}")
-    println(s"Best numIterations: ${bestNumIterations}")
-    println(s"Best regParam: ${bestRegParam}")
-
-    // Use the best parameters to construct a model for the whole training set
-    val trainTuples = trainPatients
-      .keyBy(_.patientID)
-      .join(noteFeatures)
-      .map{ case(pid, (p, arr)) => (pid, arr) }
-    val trainingPoints = constructForSVM(trainTuples, labels)
+    val trainingPoints = constructForSVM(trainNoteFeatures, labels)
     trainingPoints.cache
-
-    // Count number of training instances and positive ones among them
-    val (numTraining, numTrainingPositive) = trainingPoints
-      .aggregate((0, 0))(
-        (u, point) => (u._1+1, u._2+point.label.toInt),
-        (u1, u2) => (u1._1+u2._1, u1._2+u2._2)
-      )
-    println(s"Number of training instances: ${numTraining}")
-    println(s"Number of positive in train: ${numTrainingPositive}")
 
     val svm = new SVMWithSGD()
     svm.optimizer
@@ -355,27 +282,25 @@ object ModelRunner {
     // Evaluate the trained model with the training set
     val trainPreds = trainingPoints
       .map(point => (svmModel.predict(point.features), point.label))
-    val trainMetrics = new BinaryClassificationMetrics(trainPreds)
-    val trainAUC = trainMetrics.areaUnderROC
-    println(s"Final training AUC: ${trainAUC}")
+    val (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(trainPreds)
 
-    val testTuples = trainPatients.keyBy(_.patientID).join(noteFeatures)
-      .map{ case(pid, (p, arr)) => (pid, arr) }
-    val testingPoints = constructForSVM(testTuples, labels)
+    val testNoteFeatures = retrospectiveTopicModel(filteredTestNotes)
+    println(s"Test note features count: ${testNoteFeatures.count}")
+    val testingPoints = constructForSVM(testNoteFeatures, labels)
     val testPreds = testingPoints
       .map(point => (svmModel.predict(point.features), point.label))
 
-    val (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(testPreds)
-    println(s"Retrospective Topic Model test AUC: ${auc}")
-    println("${total},${numPositives},${auc},${accuracy},${sensitivity},${specificity}")
-    println(s"${total},${numPositives},${auc},${accuracy},${sensitivity},${specificity}")
-    println("RTM---------------- Retrospective Topic Model completed -------------------")
+    var (testTotal, testNumPositives, testAuc, testAccuracy, testSensitivity, testSpecificity) = getBinaryMetrics(testPreds)
+    println(s"Retrospective topic model test AUC: ${testAuc}")
+    println("${total},${numPositives},${testTotal},${testNumPositives},${auc},${testAuc}")
+    println(s"${total},${numPositives},${testTotal},${testNumPositives},${auc},${testAuc}")
+    println("RTM---------------- Retrospective topic model completed -------------------")
   }
 
   def runRetrospectiveDerivedFeatureModel(sc: SparkContext,
       trainPatients: RDD[Patient], testPatients: RDD[Patient], labels: RDD[LabelTuple],
       icuStays: RDD[IcuStay], saps2s: RDD[Saps2], comorbidities: RDD[Comorbidities],
-      useCv: Boolean=true, numFolds: Int=5,
+      useCv: Boolean=false, numFolds: Int=5,
       interceptCond: Boolean=true, numIterations: Int=300, regParam: Double=0.1) = {
     println("--------------- Begin retrospective derived feature model ----------------")
     val baselineFeatureArrayTuples = constructBaselineFeatureArrayTuples(
@@ -488,9 +413,7 @@ object ModelRunner {
     // Evaluate the trained model with the training set
     val trainPreds = trainingPoints
       .map(point => (svmModel.predict(point.features), point.label))
-    val trainMetrics = new BinaryClassificationMetrics(trainPreds)
-    val trainAUC = trainMetrics.areaUnderROC
-    println(s"Final training AUC: ${trainAUC}")
+    val (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(trainPreds)
 
 
     val testBaselineFeatureArrayTuples = constructBaselineFeatureArrayTuples(
@@ -504,10 +427,10 @@ object ModelRunner {
     val testPreds = testingPoints
       .map(point => (svmModel.predict(point.features), point.label))
 
-    val (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(testPreds)
-    println(s"Retrospective Topic Model test AUC: ${auc}")
-    println("${total},${numPositives},${auc}")
-    println(s"${total},${numPositives},${auc}")
-    println("---------------- Retrospective derived feature model completed -------------------")
+    var (testTotal, testNumPositives, testAuc, testAccuracy, testSensitivity, testSpecificity) = getBinaryMetrics(testPreds)
+    println(s"Retrospective derived features test AUC: ${testAuc}")
+    println("${total},${numPositives},${testTotal},${testNumPositives},${auc},${testAuc}")
+    println(s"${total},${numPositives},${testTotal},${testNumPositives},${auc},${testAuc}")
+    println("---------------- Retrospective derived features model completed -------------------")
   }
 }

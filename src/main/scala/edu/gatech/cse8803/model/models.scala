@@ -18,6 +18,7 @@ case class Medication(patientID: String, hadmID: String, date: Date, medicine: S
 
 
 case class Note(patientID: String, hadmID: String, chartDate: Date, category: String, description: String, text: String)
+case class TokenizedNote(patientID: String, hadmID: String, chartDate: Date, tokens: Seq[String])
 
 
 case class PatientId(patientID: String)
