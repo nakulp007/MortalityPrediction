@@ -9,7 +9,7 @@ import java.sql.Date
 import java.text.SimpleDateFormat
 
 object DataLoader {
-  def loadRddRawData(sqlContext: SQLContext, inputPath: String): (RDD[Patient], RDD[Diagnostic], RDD[Medication], RDD[LabResult], RDD[Note], RDD[Comorbidities], RDD[IcuStay], RDD[Saps2]) = {
+  def loadRddRawData(sqlContext: SQLContext, inputPath: String): (RDD[Patient], RDD[Note], RDD[Comorbidities], RDD[IcuStay], RDD[Saps2]) = {
 
     println("---------- Loading RDD Raw Data ----------")
 
@@ -19,24 +19,6 @@ object DataLoader {
     val patients = loadPatientRDD(sqlContext, inputPath, dateFormat)
     //patient.foreach(println)
     println(s"Patient count: ${patients.count}")
-
-
-    /*     DIAGNOSTICS     */
-    val diagnostics = null //loadDiagnosticRDD(sqlContext, inputPath, dateFormat)
-    //diagnostics.foreach(println)
-    //println(s"Diagonstics count: ${diagnostics.count}")
-
-
-    /*     MEDICATIONS     */
-    val medications = null //loadMedicationRDD(sqlContext, inputPath, dateFormat)
-    //medications.foreach(println)
-    //println(s"Medication count: ${medications.count}")
-
-
-    /*     LAB RESULT     */
-    val labResults = null //loadLabResultRDD(sqlContext, inputPath, dateFormat)
-    //labResults.foreach(println)
-    //println(s"Lab Result count: ${labResults.count}")
 
 
     /*     NOTES    */
@@ -67,8 +49,7 @@ object DataLoader {
 
     println(s"---------- Done Loading RDD Raw Data ----------")
 
-    //(null , null, null, null, null, null, null, null)
-    (patients, diagnostics, medications, labResults, notes, comorbidities, icuStays, saps2s)
+    (patients, notes, comorbidities, icuStays, saps2s)
   }
 
   def loadPatientRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[Patient] = {
@@ -80,75 +61,17 @@ object DataLoader {
         |SELECT SUBJECT_ID, GENDER, DOB, DOD, EXPIRE_FLAG
         |FROM PATIENTS
       """.stripMargin)
-      .map(r => Patient(
-        r(0).toString,
-        if (r(1).toString.toLowerCase=="m") 1 else 0,
-        new Date(dateFormat.parse(r(2).toString).getTime),
-        r(4).toString.toInt,
-        if (r(4).toString.toInt == 1 && r(3).toString.trim != "")
-          new Date(dateFormat.parse(r(3).toString).getTime)
+      .map(line => Patient(
+        line(0).toString,
+        if (line(1).toString.toLowerCase=="m") 1 else 0,
+        new Date(dateFormat.parse(line(2).toString).getTime),
+        line(4).toString.toInt,
+        if (line(4).toString.toInt == 1 && line(3).toString.trim != "")
+          new Date(dateFormat.parse(line(3).toString).getTime)
         else
           new Date(dateFormat.parse("9000-01-01 00:00:00").getTime),
         new Date(dateFormat.parse("1971-01-01 00:00:00").getTime),
         0.0
-      ))
-  }
-
-  def loadDiagnosticRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[Diagnostic] = {
-    List(inputPath + "/DIAGNOSES_ICD.csv")
-      .foreach(CSVUtils.loadCSVAsTable(sqlContext, _, "DIAGNOSES_ICD"))
-
-    sqlContext.sql(
-      """
-        |SELECT SUBJECT_ID, HADM_ID, ICD9_CODE, SEQ_NUM
-        |FROM DIAGNOSES_ICD
-      """.stripMargin)
-      .map(r => Diagnostic(
-        r(0).toString,
-        r(1).toString,
-        new Date(dateFormat.parse("1900-01-01 00:00:00").getTime),
-        r(2).toString,
-        if (r(3).toString.isEmpty) 0 else r(3).toString.toInt
-      ))
-  }
-
-  def loadMedicationRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[Medication] = {
-    List(inputPath + "/PRESCRIPTIONS.csv")
-      .foreach(CSVUtils.loadCSVAsTable(sqlContext, _, "PRESCRIPTIONS"))
-
-    sqlContext.sql(
-      """
-        |SELECT SUBJECT_ID, HADM_ID, STARTDATE, ENDDATE //, DRUG
-        |FROM PRESCRIPTIONS
-      """.stripMargin)
-      .map(r => Medication(
-        r(0).toString,
-        r(1).toString,
-        if (!r(2).toString.isEmpty)
-          new Date(dateFormat.parse(r(2).toString).getTime)
-        else if (!r(3).toString.isEmpty)
-          new Date(dateFormat.parse(r(3).toString).getTime)
-        else
-          new Date(dateFormat.parse("1900-01-01 00:00:00").getTime),
-        r(3).toString
-      ))
-  }
-
-  def loadLabResultRDD(sqlContext: SQLContext, inputPath: String, dateFormat: SimpleDateFormat): RDD[LabResult] = {
-    List(inputPath + "/LABEVENTS.csv")
-      .foreach(CSVUtils.loadCSVAsTable(sqlContext, _, "LABEVENTS"))
-
-    sqlContext.sql(
-      """
-        |SELECT SUBJECT_ID, HADM_ID, CHARTTIME, ITEMID, VALUENUM
-        |FROM LABEVENTS
-      """.stripMargin)
-      .map(r => LabResult(
-        r(0).toString,
-        r(1).toString,
-        new Date(dateFormat.parse(r(2).toString).getTime),
-        r(3).toString,
-        if (!r(4).toString.isEmpty) r(4).toString.toDouble else 0.0
       ))
   }
 
@@ -163,27 +86,27 @@ object DataLoader {
         |SELECT SUBJECT_ID, HADM_ID, CHARTDATE, CHARTTIME, CATEGORY, DESCRIPTION, TEXT, STORETIME
         |FROM NOTEEVENTS
       """.stripMargin)
-    .map(r => r)
-      .filter(r => !r(4).toString.toLowerCase.contains("discharge"))
-      .filter(r => !r(1).toString.isEmpty) // outpatients and patients not admitted to ICU don't have HADM_ID
-      .map(r => Note(
-        r(0).toString,
-        r(1).toString,
-        if (r(3).toString.isEmpty) {
-          if (r(7).toString.isEmpty) { // Check if STORETIME is available to use.
-            val dateString = if (r(2).toString.trim.length == 10) r(2).toString.trim + " 00:00:00" else r(2).toString.trim
+    .map(line => line)
+      .filter(line => !line(4).toString.toLowerCase.contains("discharge"))
+      .filter(line => !line(1).toString.isEmpty) // outpatients and patients not admitted to ICU don't have HADM_ID
+      .map(line => Note(
+        line(0).toString,
+        line(1).toString,
+        if (line(3).toString.isEmpty) {
+          if (line(7).toString.isEmpty) { // Check if STORETIME is available to use.
+            val dateString = if (line(2).toString.trim.length == 10) line(2).toString.trim + " 00:00:00" else line(2).toString.trim
             new Date(dateFormat.parse(dateString).getTime)
           } else {
-            val dateString = if (r(7).toString.trim.length == 10) r(7).toString.trim + " 00:00:00" else r(7).toString.trim
+            val dateString = if (line(7).toString.trim.length == 10) line(7).toString.trim + " 00:00:00" else line(7).toString.trim
             new Date(dateFormat.parse(dateString).getTime)
           }
         } else {
-          val dateString = if (r(3).toString.trim.length == 10) r(3).toString.trim + " 00:00:00" else r(3).toString.trim
+          val dateString = if (line(3).toString.trim.length == 10) line(3).toString.trim + " 00:00:00" else line(3).toString.trim
           new Date(dateFormat.parse(dateString).getTime)
         },
-        r(4).toString,
-        r(5).toString,
-        r(6).toString
+        line(4).toString,
+        line(5).toString,
+        line(6).toString
       ))
   }
 
@@ -201,39 +124,39 @@ object DataLoader {
         |alcohol_abuse,drug_abuse,psychoses,depression
         |FROM EHCOMORBIDITIES
       """.stripMargin)
-      .map(r => Comorbidities(
-        r(0).toString,
-        r(1).toString,
-        (if (r(2).toString.isEmpty) "0" else r(2).toString) +
-        (if (r(3).toString.isEmpty) "0" else r(3).toString) +
-        (if (r(4).toString.isEmpty) "0" else r(4).toString) +
-        (if (r(5).toString.isEmpty) "0" else r(5).toString) +
-        (if (r(6).toString.isEmpty) "0" else r(6).toString)+
-        (if (r(7).toString.isEmpty) "0" else r(7).toString)+
-        (if (r(8).toString.isEmpty) "0" else r(8).toString)+
-        (if (r(9).toString.isEmpty) "0" else r(9).toString)+
-        (if (r(10).toString.isEmpty) "0" else r(10).toString) +
-        (if (r(11).toString.isEmpty) "0" else r(11).toString)+
-        (if (r(12).toString.isEmpty) "0" else r(12).toString)+
-        (if (r(13).toString.isEmpty) "0" else r(13).toString)+
-        (if (r(14).toString.isEmpty) "0" else r(14).toString)+
-        (if (r(15).toString.isEmpty) "0" else r(15).toString)+
-        (if (r(16).toString.isEmpty) "0" else r(16).toString)+
-        (if (r(17).toString.isEmpty) "0" else r(17).toString)+
-        (if (r(18).toString.isEmpty) "0" else r(18).toString)+
-        (if (r(19).toString.isEmpty) "0" else r(19).toString)+
-        (if (r(20).toString.isEmpty) "0" else r(20).toString)+
-        (if (r(21).toString.isEmpty) "0" else r(21).toString)+
-        (if (r(22).toString.isEmpty) "0" else r(22).toString)+
-        (if (r(23).toString.isEmpty) "0" else r(23).toString)+
-        (if (r(24).toString.isEmpty) "0" else r(24).toString)+
-        (if (r(25).toString.isEmpty) "0" else r(25).toString)+
-        (if (r(26).toString.isEmpty) "0" else r(26).toString)+
-        (if (r(27).toString.isEmpty) "0" else r(27).toString) +
-        (if (r(28).toString.isEmpty) "0" else r(28).toString)+
-        (if (r(29).toString.isEmpty) "0" else r(29).toString)+
-        (if (r(30).toString.isEmpty) "0" else r(30).toString)+
-        (if (r(31).toString.isEmpty) "0" else r(31).toString)
+      .map(line => Comorbidities(
+        line(0).toString,
+        line(1).toString,
+        (if (line(2).toString.isEmpty) "0" else line(2).toString) +
+        (if (line(3).toString.isEmpty) "0" else line(3).toString) +
+        (if (line(4).toString.isEmpty) "0" else line(4).toString) +
+        (if (line(5).toString.isEmpty) "0" else line(5).toString) +
+        (if (line(6).toString.isEmpty) "0" else line(6).toString)+
+        (if (line(7).toString.isEmpty) "0" else line(7).toString)+
+        (if (line(8).toString.isEmpty) "0" else line(8).toString)+
+        (if (line(9).toString.isEmpty) "0" else line(9).toString)+
+        (if (line(10).toString.isEmpty) "0" else line(10).toString) +
+        (if (line(11).toString.isEmpty) "0" else line(11).toString)+
+        (if (line(12).toString.isEmpty) "0" else line(12).toString)+
+        (if (line(13).toString.isEmpty) "0" else line(13).toString)+
+        (if (line(14).toString.isEmpty) "0" else line(14).toString)+
+        (if (line(15).toString.isEmpty) "0" else line(15).toString)+
+        (if (line(16).toString.isEmpty) "0" else line(16).toString)+
+        (if (line(17).toString.isEmpty) "0" else line(17).toString)+
+        (if (line(18).toString.isEmpty) "0" else line(18).toString)+
+        (if (line(19).toString.isEmpty) "0" else line(19).toString)+
+        (if (line(20).toString.isEmpty) "0" else line(20).toString)+
+        (if (line(21).toString.isEmpty) "0" else line(21).toString)+
+        (if (line(22).toString.isEmpty) "0" else line(22).toString)+
+        (if (line(23).toString.isEmpty) "0" else line(23).toString)+
+        (if (line(24).toString.isEmpty) "0" else line(24).toString)+
+        (if (line(25).toString.isEmpty) "0" else line(25).toString)+
+        (if (line(26).toString.isEmpty) "0" else line(26).toString)+
+        (if (line(27).toString.isEmpty) "0" else line(27).toString) +
+        (if (line(28).toString.isEmpty) "0" else line(28).toString)+
+        (if (line(29).toString.isEmpty) "0" else line(29).toString)+
+        (if (line(30).toString.isEmpty) "0" else line(30).toString)+
+        (if (line(31).toString.isEmpty) "0" else line(31).toString)
 
       ))
   }
@@ -247,18 +170,18 @@ object DataLoader {
         |SELECT SUBJECT_ID, HADM_ID, ICUSTAY_ID, INTIME, OUTTIME
         |FROM ICUSTAYS
       """.stripMargin)
-      .map(r => IcuStay(
-        r(0).toString,
-        r(1).toString,
-        r(2).toString,
-        if (r(3).toString.isEmpty)
+      .map(line => IcuStay(
+        line(0).toString,
+        line(1).toString,
+        line(2).toString,
+        if (line(3).toString.isEmpty)
           new Date(dateFormat.parse("9000-01-01 00:00:00").getTime)
         else
-          new Date(dateFormat.parse(r(3).toString).getTime),
-        if (r(4).toString.isEmpty)
+          new Date(dateFormat.parse(line(3).toString).getTime),
+        if (line(4).toString.isEmpty)
           new Date(dateFormat.parse("9000-01-01 00:00:00").getTime)
         else
-          new Date(dateFormat.parse(r(4).toString).getTime)
+          new Date(dateFormat.parse(line(4).toString).getTime)
       ))
   }
 
@@ -274,27 +197,27 @@ object DataLoader {
           bilirubin_score,gcs_score,comorbidity_score,admissiontype_score
         |FROM SAPSII
       """.stripMargin)
-      .map(r => Saps2(
-        r(0).toString,
-        r(1).toString,
-        r(2).toString,
-        if (r(3).toString.isEmpty) 0.0 else r(3).toString.toDouble,
-        if (r(4).toString.isEmpty) 0.0 else r(4).toString.toDouble,
-        if (r(5).toString.isEmpty) 0.0 else r(5).toString.toDouble,
-        if (r(6).toString.isEmpty) 0.0 else r(6).toString.toDouble,
-        if (r(7).toString.isEmpty) 0.0 else r(7).toString.toDouble,
-        if (r(8).toString.isEmpty) 0.0 else r(8).toString.toDouble,
-        if (r(9).toString.isEmpty) 0.0 else r(9).toString.toDouble,
-        if (r(10).toString.isEmpty) 0.0 else r(10).toString.toDouble,
-        if (r(11).toString.isEmpty) 0.0 else r(11).toString.toDouble,
-        if (r(12).toString.isEmpty) 0.0 else r(12).toString.toDouble,
-        if (r(13).toString.isEmpty) 0.0 else r(13).toString.toDouble,
-        if (r(14).toString.isEmpty) 0.0 else r(14).toString.toDouble,
-        if (r(15).toString.isEmpty) 0.0 else r(15).toString.toDouble,
-        if (r(16).toString.isEmpty) 0.0 else r(16).toString.toDouble,
-        if (r(17).toString.isEmpty) 0.0 else r(17).toString.toDouble,
-        if (r(18).toString.isEmpty) 0.0 else r(18).toString.toDouble,
-        if (r(19).toString.isEmpty) 0.0 else r(19).toString.toDouble
+      .map(line => Saps2(
+        line(0).toString,
+        line(1).toString,
+        line(2).toString,
+        if (line(3).toString.isEmpty) 0.0 else line(3).toString.toDouble,
+        if (line(4).toString.isEmpty) 0.0 else line(4).toString.toDouble,
+        if (line(5).toString.isEmpty) 0.0 else line(5).toString.toDouble,
+        if (line(6).toString.isEmpty) 0.0 else line(6).toString.toDouble,
+        if (line(7).toString.isEmpty) 0.0 else line(7).toString.toDouble,
+        if (line(8).toString.isEmpty) 0.0 else line(8).toString.toDouble,
+        if (line(9).toString.isEmpty) 0.0 else line(9).toString.toDouble,
+        if (line(10).toString.isEmpty) 0.0 else line(10).toString.toDouble,
+        if (line(11).toString.isEmpty) 0.0 else line(11).toString.toDouble,
+        if (line(12).toString.isEmpty) 0.0 else line(12).toString.toDouble,
+        if (line(13).toString.isEmpty) 0.0 else line(13).toString.toDouble,
+        if (line(14).toString.isEmpty) 0.0 else line(14).toString.toDouble,
+        if (line(15).toString.isEmpty) 0.0 else line(15).toString.toDouble,
+        if (line(16).toString.isEmpty) 0.0 else line(16).toString.toDouble,
+        if (line(17).toString.isEmpty) 0.0 else line(17).toString.toDouble,
+        if (line(18).toString.isEmpty) 0.0 else line(18).toString.toDouble,
+        if (line(19).toString.isEmpty) 0.0 else line(19).toString.toDouble
       ))
   }
 
