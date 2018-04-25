@@ -257,14 +257,10 @@ object ModelRunner {
     println(s"Chosen numIterations: ${bestNumIterations}")
     println(s"Chosen regParam: ${bestRegParam}")
 
-    val filteredTrainNotes = tokenizedNotes.keyBy(_.patientID)
-      .join(trainPatients.keyBy(_.patientID))
-      .map{ case(pid, (tnote, p)) => tnote }
-    val filteredTestNotes = tokenizedNotes.keyBy(_.patientID)
-      .join(testPatients.keyBy(_.patientID))
-      .map{ case(pid, (tnote, p)) => tnote }
+    val allLdaFeatures = retrospectiveTopicModel(tokenizedNotes)
 
-    val trainNoteFeatures = retrospectiveTopicModel(filteredTrainNotes)
+    val trainNoteFeatures = allLdaFeatures.join(trainPatients.keyBy(_.patientID))
+      .map{ case(pid, (arr, p)) => (pid, arr) }
     println(s"Train note features count: ${trainNoteFeatures.count}")
 
     val trainingPoints = constructForSVM(trainNoteFeatures, labels)
@@ -284,7 +280,8 @@ object ModelRunner {
       .map(point => (svmModel.predict(point.features), point.label))
     val (total, numPositives, auc, accuracy, sensitivity, specificity) = getBinaryMetrics(trainPreds)
 
-    val testNoteFeatures = retrospectiveTopicModel(filteredTestNotes)
+    val testNoteFeatures = allLdaFeatures.join(testPatients.keyBy(_.patientID))
+      .map{ case(pid, (arr, p)) => (pid, arr) }
     println(s"Test note features count: ${testNoteFeatures.count}")
     val testingPoints = constructForSVM(testNoteFeatures, labels)
     val testPreds = testingPoints
