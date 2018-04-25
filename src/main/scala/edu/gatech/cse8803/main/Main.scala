@@ -105,7 +105,7 @@ object Main {
     runRetrospectiveTopicModel(sc, subsampledTrainingPatients, testPatients,
         tokenizedNotes, labels,
         numIterations=300,
-        regParam=100)
+        regParam=0.1)
 
     //runRetrospectiveDerivedFeatureModel(sc, trainPatients, testPatients, labels,
     //    icuStays, rawSaps2s, rawComorbidities,

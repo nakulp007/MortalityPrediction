@@ -201,6 +201,7 @@ object ModelRunner {
     val filteredTestNotes = tokenizedNotes.keyBy(_.patientID)
       .join(testPatients.keyBy(_.patientID))
       .map{ case(pid, (tnote, p)) => tnote }
+
     // Test the model across time with the test data
     var go = true
     var hr = 12
