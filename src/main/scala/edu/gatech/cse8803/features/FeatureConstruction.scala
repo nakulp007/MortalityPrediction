@@ -274,8 +274,6 @@ object FeatureConstruction {
       }
       .map{ case((pid, hadmID), ((p, icu), note)) => (pid, note) }
 
-    println(s"notesInIcu count: ${notesInIcu.count}")
-
     // Count the number of non-stopwords for each patient
     // Then filter for those who have at least 100 words
     val broadcastStopwords = sc.broadcast(stopwords)
@@ -391,9 +389,6 @@ object FeatureConstruction {
     //val distLdaModel = ldaModel.asInstanceOf[DistributedLDAModel]
     val topTopicsForDoc = ldaModel.topicDistributions
 
-    //println(s"documents-Count: ${topTopicsForDoc.count}")
-    //println(s"topics-Type: ${topTopicsForDoc.getClass}")
-
     val broadcastDocPatientMap = sc.broadcast(docPatientMap)
     val intermediateRdd: RDD[(String, (Int, DenseVector[Double]))] = topTopicsForDoc.map(
       row => (broadcastDocPatientMap.value(row._1.toInt), (1, new DenseVector(row._2.toArray))))
@@ -402,9 +397,6 @@ object FeatureConstruction {
     val finalNoteFeatures = intermediateRdd
       .reduceByKey((v1, v2) => (v1._1+v2._1, v1._2+v2._2))
       .map{ case(pid, (docCount, sumVector)) => (pid, (sumVector * (1.0 / docCount)).toArray)}
-
-    //println(s"final-RDD type : ${featuresRdd.getClass}")
-    //println(s"Number of note features: ${finalNoteFeatures.count}")
 
     (finalNoteFeatures)
   }
@@ -416,14 +408,10 @@ object FeatureConstruction {
       .join(patients.keyBy(_.patientID))
       .map{ case(pid, (icu, p)) => ((pid, icu.hadmID), 0) }
 
-    println(s"PatIcu: ${patIcu.count}")
-
     val comorbiditiesUnique = comorbidities
       .map(x => ((x.patientID, x.hadmID), x))
       .join(patIcu)
       .map{ case((pid, hadmID), (comorb, z)) => comorb }
-
-    println(s"Comorb: ${comorbiditiesUnique.count}")
 
     val comorbiditiesFeatures = comorbiditiesUnique.map(x => (x.patientID, Array[Double]((x.allValues.charAt(0)-48).toDouble, (x.allValues.charAt(1)-48).toDouble, (x.allValues.charAt(2)-48).toDouble,
       (x.allValues.charAt(3)-48).toDouble,(x.allValues.charAt(4)-48).toDouble,(x.allValues.charAt(5)-48).toDouble,(x.allValues.charAt(6)-48).toDouble,(x.allValues.charAt(7)-48).toDouble,
