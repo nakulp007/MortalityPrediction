@@ -194,7 +194,7 @@ object ModelRunner {
     println(s"Chosen numIterations: ${bestNumIterations}")
     println(s"Chosen regParam: ${bestRegParam}")
 
-    println("${hr},${total},${numPositives},${auc},${accuracy},${sensitivity},${specificity}")
+    println("${hr},${total},${numPositives},${auc}")
     val filteredTrainNotes = tokenizedNotes.keyBy(_.patientID)
       .join(trainPatients.keyBy(_.patientID))
       .map{ case(pid, (tnote, p)) => tnote }
