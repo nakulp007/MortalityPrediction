@@ -396,7 +396,7 @@ object FeatureConstruction {
 
     val finalNoteFeatures = intermediateRdd
       .reduceByKey((v1, v2) => (v1._1+v2._1, v1._2+v2._2))
-      .map{ case(pid, (docCount, sumVector)) => (pid, (sumVector * (1.0 / docCount)).toArray)}
+      .map{ case(pid, (docCount, sumVector)) => (pid, (sumVector * (1.0 / docCount)).toArray) }
 
     (finalNoteFeatures)
   }
