@@ -137,6 +137,37 @@ object FeatureConstruction {
   }
 
   /* Filter for patients and icuStays remaining in ICU x hours after their first note */
+  def filterAllOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay], notes: RDD[Note],
+      firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay], RDD[Note]) = {
+    if (hours <= 0) return (patients, icuStays, notes)
+
+    val MILLISECONDS_IN_HOUR = 60L * 60 * 1000
+    val offsetInMilliseconds = MILLISECONDS_IN_HOUR*hours
+
+    val joined = patients.keyBy(_.patientID).join(icuStays.keyBy(_.patientID))
+      .join(firstNoteDates)
+      .filter{ case(pid, ((p, icu), date)) => {
+          val bound = date.getTime + offsetInMilliseconds
+          (icu.outDate.getTime > bound && p.dod.getTime > bound)
+        }
+      }
+    val filteredPatients = joined.map(x => x._2._1._1)
+    val filteredIcuStays = joined.map(x => x._2._1._2)
+    val filteredNotes = filteredPatients.keyBy(_.patientID)
+      .join(firstNoteDates)
+      .map{ case(pid, (p, date)) => (pid, date) }
+      .join(notes.keyBy(_.patientID))
+      .filter{ case(pid, (date, note)) =>  {
+          val bound = date.getTime + offsetInMilliseconds
+          (note.chartDate.getTime < bound)
+        }
+      }
+      .map{ case(pid, (date, note)) => note }
+
+    (filteredPatients, filteredIcuStays, filteredNotes)
+  }
+
+  /* Filter for patients and icuStays remaining in ICU x hours after their first note */
   def filterDataOnHoursSinceFirstNote(patients: RDD[Patient], icuStays: RDD[IcuStay], notes: RDD[Note],
       firstNoteDates: RDD[FirstNoteInfo], hours: Int): (RDD[Patient], RDD[IcuStay], RDD[Note]) = {
     if (hours <= 0) return (patients, icuStays, notes)
